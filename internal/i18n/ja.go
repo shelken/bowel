@@ -38,6 +38,7 @@ var jaTable = map[string]string{
 	"找不到 mihomo 内核 (%s)，先运行 scripts/fetch-core.sh": "mihomo コアが見つかりません (%s)。先に scripts/fetch-core.sh を実行してください",
 	"内核意外退出":            "コアが予期せず終了しました",
 	"内核启动超时: ":          "コアの起動がタイムアウトしました: ",
+	"无法连接外部内核: ":        "外部コアに接続できません: ",
 	"HTTP 端口":           "HTTP ポート",
 	"SOCKS 端口":          "SOCKS ポート",
 	"%s要在 0 到 65535 之间": "%sは 0〜65535 の範囲で指定してください",

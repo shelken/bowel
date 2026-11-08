@@ -39,6 +39,7 @@ var hantTable = map[string]string{
 	"找不到 mihomo 内核 (%s)，先运行 scripts/fetch-core.sh": "找不到 mihomo 核心 (%s)，先執行 scripts/fetch-core.sh",
 	"内核意外退出":            "核心意外結束",
 	"内核启动超时: ":          "核心啟動逾時: ",
+	"无法连接外部内核: ":        "無法連線外部核心: ",
 	"HTTP 端口":           "HTTP 連接埠",
 	"SOCKS 端口":          "SOCKS 連接埠",
 	"%s要在 0 到 65535 之间": "%s要在 0 到 65535 之間",
