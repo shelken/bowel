@@ -71,7 +71,7 @@ func panelTheme(c *ui.Context, p *pal) { applyTheme(c, p, true) }
 func (u *UI) panelView(c *ui.Context) {
 	c.DisableAnimations() // switches and hovers land at once
 	useLook(u.shownSettings())
-	p := palette(c)
+	p := u.routePal(palette(c))
 	panelTheme(c, p)
 	c.OnShortcut(ui.Cmd, ui.KeyO, func() { u.panelShow(nil) })
 	c.OnShortcut(ui.Cmd, ui.KeyQ, mygo.App.Quit)

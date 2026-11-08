@@ -1949,12 +1949,31 @@ func kv(c *ui.Context, p *pal, rows [][2]string) {
 func (u *UI) routesNormal(c *ui.Context, p *pal) {
 	pad(c, 16).Children(func() {
 		cellKicker(c, p, "routes", i18n.T("其他路由", "Other routes"))
+		var others []RouteView
+		for _, r := range u.snap.Routes {
+			if r.ID != "default" {
+				others = append(others, r)
+			}
+		}
+		// What the cell holds is five rows; a core with more shows the first
+		// few and counts the rest.
+		const rows = 5
+		shown := others
+		if len(others) > rows {
+			shown = others[:rows-2]
+		}
 		ui.Column(c).Margin(4, 0, 0, 0).Children(func() {
-			for _, r := range u.snap.Routes {
-				if r.ID == "default" {
-					continue
-				}
+			for _, r := range shown {
 				u.routeRow(c, p, r)
+			}
+			if more := len(others) - len(shown); more > 0 {
+				ui.ButtonBase(c.Key("more")).Padding(6, 0).OnClick(func() {
+					if u.snap.Takeover.On {
+						u.home.x, u.home.sub, u.home.query, u.home.region = "routes", "", "", ""
+					}
+				}).Children(func() {
+					ui.Text(c, fmt.Sprintf(i18n.T("还有 %d 条路由", "%d more routes"), more)).FontSize(12).TextColor(p.mute)
+				})
 			}
 		})
 	})
@@ -2027,7 +2046,9 @@ func (u *UI) routesExpanded(c *ui.Context, p *pal, w float32) {
 		return
 	}
 	u.detailHead(c, p, "routes", i18n.T("路由", "Route"), func() { detailTitle(c, p, i18n.T("每类流量走哪里", "Where each kind of traffic goes")) }, func() {
-		btn(c.Key("rules"), p, i18n.T("管理规则", "Manage rules")).OnClick(u.openRules)
+		if !u.snap.External {
+			btn(c.Key("rules"), p, i18n.T("管理规则", "Manage rules")).OnClick(u.openRules)
+		}
 	})
 	ui.Scroll(c).Grow(1).Padding(4, 16, 18, 16).Children(func() {
 		for _, r := range u.snap.Routes {
@@ -2053,7 +2074,11 @@ func (u *UI) routesExpanded(c *ui.Context, p *pal, w float32) {
 					if r.Mine > 0 {
 						summary = fmt.Sprintf(i18n.T("含你加的 %d 条 · %s", "%d of them yours · %s"), r.Mine, summary)
 					}
-					ui.Text(c, fmt.Sprintf(i18n.T("%[1]d 条规则 · %[3]s", "%d %s · %s"), r.Rules, rulesWord(r.Rules), summary)).
+					text := fmt.Sprintf(i18n.T("%[1]d 条规则 · %[3]s", "%d %s · %s"), r.Rules, rulesWord(r.Rules), summary)
+					if summary == "" {
+						text = fmt.Sprintf(i18n.T("%[1]d 条规则", "%d %s"), r.Rules, rulesWord(r.Rules))
+					}
+					ui.Text(c, text).
 						FontSize(12).TextColor(p.mute).SingleLine().Shrink(1).Margin(0, 0, 0, 22)
 				})
 				name := i18n.T("直接连接", "Direct")

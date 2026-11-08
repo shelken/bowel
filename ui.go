@@ -10,6 +10,7 @@ package main
 import (
 	"embed"
 	"fmt"
+	"maps"
 	"math"
 	"strings"
 	"sync"
@@ -267,6 +268,23 @@ func (p *pal) routeColor(id string) ui.Color {
 	return p.mute
 }
 
+// routePal is p with colors for a core's own routes. Their ids are the
+// core's group names, which the palette does not know; each takes the
+// color of the token it carries ("--r-media" is p.route["media"]).
+func (u *UI) routePal(p *pal) *pal {
+	if !u.snap.External {
+		return p
+	}
+	q := *p
+	q.route = maps.Clone(p.route)
+	for _, r := range u.snap.Routes {
+		if col, ok := p.route[strings.TrimPrefix(r.Color, "--r-")]; ok {
+			q.route[r.ID] = col
+		}
+	}
+	return &q
+}
+
 // sans is the face of all text, headlines included: OPPO Sans, bundled
 // (registerFonts), with the system's for what it lacks or when it did not
 // load.
@@ -279,7 +297,7 @@ var motion = ui.Animation{Duration: 520 * time.Millisecond, Ease: ui.CubicBezier
 
 func (u *UI) view(c *ui.Context) {
 	useLook(u.shownSettings())
-	p := windowPal(c, palette(c))
+	p := windowPal(c, u.routePal(palette(c)))
 	applyTheme(c, p, true)
 	// The caret in ink: the accent may be too pale for a line on paper.
 	c.Root().CaretColor(p.ink)

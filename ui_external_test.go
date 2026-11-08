@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -230,5 +231,76 @@ func TestCoreSourceChoiceOnAnExternalCore(t *testing.T) {
 	tt.Frame()
 	if s := u.shownSettings(); s.CoreSource != "" {
 		t.Errorf("source %q", s.CoreSource)
+	}
+}
+
+// A core's routes take their colors from the palette by the token they
+// carry, whatever their names are; the template's own are left as they
+// are, and the shared palette is not touched.
+func TestExternalRoutesAreColored(t *testing.T) {
+	u := externalUI()
+	u.snap.Routes = []RouteView{
+		{ID: "default", Color: "--r-default"},
+		{ID: "work", Color: "--r-media"},
+		{ID: "dev", Color: "--r-ai"}, // a core's route that happens to share an id
+	}
+	p := u.routePal(&lightPal)
+	if p.routeColor("work") != lightPal.route["media"] || p.routeColor("dev") != lightPal.route["ai"] {
+		t.Errorf("work %v dev %v", p.routeColor("work"), p.routeColor("dev"))
+	}
+	if _, ok := lightPal.route["work"]; ok || lightPal.route["dev"] == lightPal.route["ai"] {
+		t.Error("the shared palette changed")
+	}
+	u.snap.External = false
+	if q := u.routePal(&lightPal); q != &lightPal {
+		t.Error("the template's palette was copied")
+	}
+}
+
+func TestExternalRoutesPageHasNoRuleManager(t *testing.T) {
+	u := externalUI()
+	tt := ui.NewTesterWith(u.view, 1060, 760, ui.TesterOptions{})
+	for i := range u.snap.Routes {
+		u.snap.Routes[i].Summary = "" // a core's route has none
+	}
+	u.home.x, u.home.sub = "routes", ""
+	tt.Frame()
+	tt.Advance(2 * time.Second)
+	if tt.HasText("管理规则") {
+		t.Errorf("the page offers to manage rules: %q", tt.Texts())
+	}
+	if !tt.HasText("26 条规则") {
+		t.Errorf("a route without a summary has a dangling dot: %q", tt.Texts())
+	}
+}
+
+// A core may have many routes: the board shows the first few and says how
+// many more there are, instead of cutting a row in half.
+func TestManyRoutesOnTheBoard(t *testing.T) {
+	u := externalUI()
+	base := u.snap.Routes
+	rs := []RouteView{base[0]}
+	for i := 1; i <= 18; i++ {
+		r := base[1]
+		r.ID, r.Name = fmt.Sprintf("r%02d", i), fmt.Sprintf("r%02d", i)
+		rs = append(rs, r)
+	}
+	u.snap.Routes = rs
+	tt := ui.NewTesterWith(u.view, 1060, 760, ui.TesterOptions{})
+	tt.Advance(time.Second)
+	wantTexts(t, tt, "r01", "r02", "r03", "还有 15 条路由")
+	if err := tt.Click("还有 15 条路由"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if u.home.x != "routes" {
+		t.Errorf("opened %q", u.home.x)
+	}
+	// The template's routes all fit.
+	u = fixtureUI()
+	tt = ui.NewTesterWith(u.view, 1060, 760, ui.TesterOptions{})
+	tt.Advance(time.Second)
+	if hasTextPart(tt, "还有") {
+		t.Errorf("the template's routes are cut: %q", tt.Texts())
 	}
 }
