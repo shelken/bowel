@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -13,6 +14,7 @@ import (
 	"github.com/egoist/mygo"
 
 	"github.com/oboo/moho/internal/gateway"
+	"github.com/oboo/moho/internal/routes"
 	"github.com/oboo/moho/internal/settings"
 	"github.com/oboo/moho/internal/sysproxy"
 )
@@ -31,7 +33,7 @@ func externalApp(t *testing.T, h http.Handler) (*App, string) {
 	savedGw := osGateway
 	osGateway = func() gateway.System { return &gwFake{t: t} }
 	t.Cleanup(func() { osGateway = savedGw })
-	t.Setenv("MOHO_CORE", "")
+	t.Setenv("MOHO_CORE", filepath.Join(t.TempDir(), "no-core")) // nothing to copy into a TUN install
 
 	dir := t.TempDir()
 	mygo.App.SetPath(mygo.PathUserData, dir)
@@ -202,5 +204,68 @@ func TestExternalCoreMCPToolsDoNotListNoRoutes(t *testing.T) {
 				t.Errorf("%s: route is described as %q", tool.Name, d)
 			}
 		}
+	}
+}
+
+// Nothing a person does at the interface may change the core, or what is
+// around it, when the core is someone else's: not its config, not the
+// system proxy or TUN that bowel would otherwise set up for its own core.
+// A refused action keeps the settings as they were.
+func TestExternalCoreRefusesToBeConfigured(t *testing.T) {
+	var mu sync.Mutex
+	var writes []string
+	a, _ := externalApp(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			mu.Lock()
+			writes = append(writes, r.Method+" "+r.URL.Path)
+			mu.Unlock()
+		}
+		switch r.URL.Path {
+		case "/version":
+			io.WriteString(w, `{"version":"sing-box 1.14.4"}`)
+		case "/proxies":
+			io.WriteString(w, `{"proxies":{"GLOBAL":{"name":"GLOBAL","type":"Fallback","now":"main","all":["main"]},
+				"main":{"name":"main","type":"Selector","now":"n1","all":["n1"]},"n1":{"name":"n1","type":"Shadowsocks"}}}`)
+		case "/rules":
+			io.WriteString(w, `{"rules":[]}`)
+		default:
+			w.WriteHeader(http.StatusNoContent)
+		}
+	}))
+	a.refresh()
+	cwd := t.TempDir()
+	t.Chdir(cwd)
+	before := a.settings.Get()
+
+	for name, act := range map[string]func() error{
+		"takeover":     func() error { return a.setTakeover(true) },
+		"system proxy": func() error { return a.setSystemProxy(true) },
+		"TUN":          func() error { return a.setTun(true) },
+		"LAN":          func() error { return a.setLan(true) },
+		"mode":         func() error { return a.setMode("global") },
+		"gateway":      func() error { return a.setGateway(true) },
+		"port":         func() error { return a.updateSettings(func(s *settings.Settings) { s.MixedPort = 17999 }) },
+		"geo":          a.updateGeo,
+		"flush DNS":    a.flushDNS,
+		"rule": func() error {
+			_, err := a.addRule(routes.UserRule{Kind: routes.KindSuffix, Value: "example.com", Route: "default"})
+			return err
+		},
+	} {
+		if err := act(); err == nil {
+			t.Errorf("%s: no error", name)
+		}
+	}
+	_ = a.resetSettings()
+	if got := a.settings.Get(); !reflect.DeepEqual(got, before) {
+		t.Errorf("settings changed:\n%+v\n%+v", before, got)
+	}
+	if ents, _ := os.ReadDir(cwd); len(ents) > 0 {
+		t.Errorf("files were written: %v", ents)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(writes) > 0 {
+		t.Errorf("the external core was changed: %v", writes)
 	}
 }

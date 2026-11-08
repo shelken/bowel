@@ -478,6 +478,9 @@ func (a *App) takeoverOn(s settings.Settings) bool {
 
 // applyConfig rebuilds the runtime config and makes the core use it.
 func (a *App) applyConfig() error {
+	if err := a.errExternal(); err != nil {
+		return err
+	}
 	s := a.settings.Get()
 	var refs []core.ProviderRef
 	for _, p := range a.providers.List() {
@@ -531,6 +534,9 @@ var osProxy = struct {
 // applySystemProxy makes the OS match the settings. prev are mixed ports
 // the system may still point at, as after the port changed.
 func (a *App) applySystemProxy(prev ...int) {
+	if a.core.External() {
+		return // it takes over by itself, if at all
+	}
 	s := a.settings.Get()
 	want := a.takeoverOn(s) && s.SystemProxy
 	cur, err := sysproxy.Check(s.MixedPort)
@@ -631,7 +637,19 @@ func (a *App) busy(key string) bool {
 
 // ---- Actions ----
 
+// errExternal is what an action that would change the core says when the
+// core is someone else's.
+func (a *App) errExternal() error {
+	if !a.core.External() {
+		return nil
+	}
+	return errors.New(i18n.T("外部内核由它自己管理，bowel 不会改动它", "The external core manages itself; bowel does not change it"))
+}
+
 func (a *App) setTakeover(on bool) error {
+	if err := a.errExternal(); err != nil {
+		return err
+	}
 	done := a.begin("takeover")
 	defer done()
 	_, err := a.settings.Update(func(s *settings.Settings) {
@@ -647,6 +665,9 @@ func (a *App) setTakeover(on bool) error {
 }
 
 func (a *App) setSystemProxy(on bool) error {
+	if err := a.errExternal(); err != nil {
+		return err
+	}
 	done := a.begin("entry:sys")
 	defer done()
 	if _, err := a.settings.Update(func(s *settings.Settings) {
@@ -661,6 +682,9 @@ func (a *App) setSystemProxy(on bool) error {
 }
 
 func (a *App) setTun(on bool) error {
+	if err := a.errExternal(); err != nil {
+		return err
+	}
 	done := a.begin("entry:tun")
 	defer done()
 	if on && !tun.Installed(a.tunBin) {
@@ -690,6 +714,9 @@ func (a *App) afterTakeover() error {
 }
 
 func (a *App) setLan(on bool) error {
+	if err := a.errExternal(); err != nil {
+		return err
+	}
 	done := a.begin("lan")
 	defer done()
 	if _, err := a.settings.Update(func(s *settings.Settings) { s.AllowLan = on }); err != nil {
@@ -699,6 +726,9 @@ func (a *App) setLan(on bool) error {
 }
 
 func (a *App) setMode(mode string) error {
+	if err := a.errExternal(); err != nil {
+		return err
+	}
 	switch mode {
 	case "rule", "global", "direct":
 	default:
@@ -789,6 +819,11 @@ func (a *App) updateSettings(fn func(*settings.Settings)) error {
 	fn(&next)
 	if err := next.Validate(); err != nil {
 		return err
+	}
+	if !appOnly(old, next) {
+		if err := a.errExternal(); err != nil {
+			return err
+		}
 	}
 	// A port the core does not listen on yet must be free.
 	for _, p := range [][2]int{{old.MixedPort, next.MixedPort}, {old.HTTPPort, next.HTTPPort},
