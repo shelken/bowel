@@ -1012,12 +1012,19 @@ func (a *App) locate(ctx context.Context, node string) error {
 	return err
 }
 
-// probe measures a node's exit in the background, showing "locating".
+// probe measures a node's exit in the background, showing "locating". A
+// node that cannot be measured keeps the place its name gives; the log
+// says why. An external core has no probe to run.
 func (a *App) probe(node string) {
+	if a.core.External() {
+		return
+	}
 	if r := a.loc.Guess(node, display(node)); r.Source == "probe" {
 		return
 	}
-	_, _ = a.probeErr(context.Background(), node)
+	if _, err := a.probeErr(context.Background(), node); err != nil {
+		log.Println("locate:", err)
+	}
 }
 
 func (a *App) probeErr(ctx context.Context, node string) (locate.Result, error) {

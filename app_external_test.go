@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -410,5 +411,39 @@ func TestChoosingAnotherCoreNeedsARestart(t *testing.T) {
 		if a.snapshot().RestartNeeded {
 			t.Errorf("%s: a restart is asked for after the choice went back", name)
 		}
+	}
+}
+
+// A probe that fails leaves the node's place a guess; the log says why, for
+// a core that can be probed. An external one cannot, so nothing is tried.
+func TestProbeFailuresAreLogged(t *testing.T) {
+	var out strings.Builder
+	log.SetOutput(&out)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
+	built, _, _ := mcpApp(t) // its core is not running
+	built.probe("n1")
+	if !strings.Contains(out.String(), "locate:") {
+		t.Errorf("the built-in core's failed probe left no trace: %q", out.String())
+	}
+
+	out.Reset()
+	ext, _ := externalApp(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/version":
+			io.WriteString(w, `{"version":"sing-box 1.14.4"}`)
+		case "/proxies":
+			io.WriteString(w, `{"proxies":{"GLOBAL":{"name":"GLOBAL","type":"Fallback","now":"main","all":["main"]},
+				"main":{"name":"main","type":"Selector","now":"n1","all":["n1"]},"n1":{"name":"n1","type":"Shadowsocks"}}}`)
+		case "/rules":
+			io.WriteString(w, `{"rules":[]}`)
+		default:
+			w.WriteHeader(http.StatusNoContent)
+		}
+	}))
+	out.Reset()
+	ext.probe("n1")
+	if out.Len() != 0 {
+		t.Errorf("an external core was probed: %q", out.String())
 	}
 }
