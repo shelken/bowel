@@ -97,9 +97,10 @@ const Default = "default"
 
 // Title is a route's name as the interface shows it. Name stays the
 // mihomo group's, in Chinese, so that configs and choices keep across a
-// change of language.
+// change of language. Only the template's own names have an English one;
+// a core's route keeps the name the core gave it.
 func Title(r Route) string {
-	if en, ok := titleEn[r.ID]; ok {
+	if en, ok := titleEn[r.Name]; ok {
 		return i18n.T(r.Name, en)
 	}
 	return r.Name
@@ -107,27 +108,30 @@ func Title(r Route) string {
 
 // Describe is a route's Summary as the interface shows it.
 func Describe(r Route) string {
-	if en, ok := summaryEn[r.ID]; ok {
+	if en, ok := summaryEn[r.Summary]; ok {
 		return i18n.T(r.Summary, en)
 	}
 	return r.Summary
 }
 
-var titleEn = map[string]string{Default: "Default", "ai": "AI", "media": "Streaming", "dev": "Dev", "direct": "Direct"}
+const defaultSummary = "没命中其他规则的流量"
+
+// titleEn and summaryEn are keyed by the Chinese text they translate.
+var titleEn = map[string]string{"默认": "Default", "AI 服务": "AI", "流媒体": "Streaming", "开发": "Dev", "直连": "Direct"}
 
 var summaryEn = map[string]string{
-	Default:  "Traffic no other rule matched",
-	"ai":     "OpenAI · Claude · Gemini · Perplexity and more",
-	"media":  "YouTube · Netflix · Spotify · Disney+ and more",
-	"dev":    "GitHub · npm · Docker · PyPI · Go and more",
-	"direct": "Mainland China sites · LAN",
+	defaultSummary: "Traffic no other rule matched",
+	"OpenAI · Claude · Gemini · Perplexity 等": "OpenAI · Claude · Gemini · Perplexity and more",
+	"YouTube · Netflix · Spotify · Disney+ 等": "YouTube · Netflix · Spotify · Disney+ and more",
+	"GitHub · npm · Docker · PyPI · Go 等":     "GitHub · npm · Docker · PyPI · Go and more",
+	"国内网站 · 局域网":                              "Mainland China sites · LAN",
 }
 
 // Template returns the routes in the order their rules apply; the default
 // route comes first for display, its rule (MATCH) last.
 func Template() Table {
 	t := Table{
-		{ID: Default, Name: "默认", Color: "--r-default", Summary: "没命中其他规则的流量"},
+		{ID: Default, Name: "默认", Color: "--r-default", Summary: defaultSummary},
 		{ID: "ai", Name: "AI 服务", Color: "--r-ai", Summary: "OpenAI · Claude · Gemini · Perplexity 等", Rules: suffixes(
 			"openai.com", "chatgpt.com", "oaistatic.com", "oaiusercontent.com", "sora.com",
 			"anthropic.com", "claude.ai", "claude.com", "claudeusercontent.com",

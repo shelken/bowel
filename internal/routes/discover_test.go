@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/oboo/moho/internal/i18n"
 	"github.com/oboo/moho/internal/mihomo"
 )
 
@@ -134,4 +135,40 @@ func join(ss []string) string {
 		out += s
 	}
 	return out
+}
+
+// The English of a title or a summary belongs to the template's Chinese
+// text, not to a route's id: a core's own route may be called "media" or
+// "direct" and say nothing about streaming or the mainland.
+func TestDiscoveredRoutesKeepTheirOwnWords(t *testing.T) {
+	i18n.Set("en")
+	defer i18n.Set("zh")
+	px := map[string]mihomo.Proxy{
+		"GLOBAL": {Type: "Fallback", Now: "main"},
+		"main":   group("n1", "n1"),
+		"media":  group("n1", "n1"),
+		"direct": {Type: "Direct"},
+		"n1":     {Type: "Shadowsocks"},
+	}
+	tb := Discover(px, []mihomo.Rule{rule("route(media)", "a"), rule("route(direct)", "b")})
+	for _, c := range []struct{ id, title, summary string }{
+		{Default, "Default", "Traffic no other rule matched"},
+		{"media", "media", ""},
+		{"direct", "Direct", ""},
+	} {
+		r := tb.ByID(c.id)
+		if Title(r) != c.title || Describe(r) != c.summary {
+			t.Errorf("%s: %q, %q; want %q, %q", c.id, Title(r), Describe(r), c.title, c.summary)
+		}
+	}
+}
+
+func TestTemplateRoutesHaveEnglish(t *testing.T) {
+	i18n.Set("en")
+	defer i18n.Set("zh")
+	for _, r := range Template() {
+		if Title(r) == r.Name || Describe(r) == r.Summary {
+			t.Errorf("%s has no English: %q, %q", r.ID, Title(r), Describe(r))
+		}
+	}
 }

@@ -15,7 +15,7 @@ func Discover(px map[string]mihomo.Proxy, rules []mihomo.Rule) Table {
 	var t Table
 	def := px["GLOBAL"].Now
 	if px[def].Type == "Selector" {
-		t = append(t, Route{ID: Default, Name: "默认", Color: "--r-default", Group: def})
+		t = append(t, Route{ID: Default, Name: "默认", Color: "--r-default", Summary: defaultSummary, Group: def})
 	}
 	at := map[string]int{} // target -> index in t
 	if len(t) > 0 {
