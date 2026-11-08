@@ -3,7 +3,10 @@
 // can serve every route (decision D1 of docs/product-ia.md).
 package routes
 
-import "github.com/oboo/moho/internal/i18n"
+import (
+	"github.com/oboo/moho/internal/i18n"
+	"github.com/oboo/moho/internal/mihomo"
+)
 
 // Route is a kind of traffic and where it may go.
 type Route struct {
@@ -15,15 +18,82 @@ type Route struct {
 	Rules []string `json:"-"`
 	// Direct routes never use a node.
 	Direct bool `json:"direct"`
+	// Group is the core's group that serves the route; Auto its automatic
+	// (fastest + failover) group, "" when it has none. Direct routes have
+	// neither.
+	Group string `json:"-"`
+	Auto  string `json:"-"`
+}
+
+// Table is the routes in the order they are shown.
+type Table []Route
+
+// ByID is the route with that id, or the zero Route.
+func (t Table) ByID(id string) Route {
+	for _, r := range t {
+		if r.ID == id {
+			return r
+		}
+	}
+	return Route{}
+}
+
+// OfChain is the id of the route that a connection's last step (a group,
+// or DIRECT) belongs to, "" when none does. A connection that went direct
+// belongs to the direct route only when a rule sent it there.
+func (t Table) OfChain(group, rule string) string {
+	if group == "" {
+		return ""
+	}
+	for _, r := range t {
+		if !r.Direct && (group == r.Group || group == r.Auto) {
+			return r.ID
+		}
+	}
+	if group == "DIRECT" && rule != "" && rule != "Match" {
+		for _, r := range t {
+			if r.Direct {
+				return r.ID
+			}
+		}
+	}
+	return ""
+}
+
+// StepTitle is a chain's step as the interface shows it: a route's group by
+// the route's title, anything else (a node, DIRECT) as it is.
+func (t Table) StepTitle(name string) string {
+	if name == "" {
+		return name
+	}
+	for _, r := range t {
+		switch name {
+		case r.Group:
+			return Title(r)
+		case r.Auto:
+			return Title(r) + i18n.T("·自动", " · Auto")
+		}
+	}
+	return name
+}
+
+// Current is the node the route uses now, and whether its automatic group
+// chose it. A group may pick another group, so it follows the choices to
+// the node that carries the traffic; "" when the core has no such group.
+func (r Route) Current(px map[string]mihomo.Proxy) (node string, auto bool) {
+	g, ok := px[r.Group]
+	if !ok {
+		return "", false
+	}
+	node = g.Now
+	for len(px[node].All) > 0 {
+		node = px[node].Now
+	}
+	return node, r.Auto != "" && g.Now == r.Auto
 }
 
 // Default is the route that takes what no rule matched.
 const Default = "default"
-
-// Group is the name of a route's mihomo group; Auto that of its automatic
-// (fastest + failover) group.
-func Group(r Route) string { return r.Name }
-func Auto(r Route) string  { return r.Name + "·自动" }
 
 // Title is a route's name as the interface shows it. Name stays the
 // mihomo group's, in Chinese, so that configs and choices keep across a
@@ -55,8 +125,8 @@ var summaryEn = map[string]string{
 
 // Template returns the routes in the order their rules apply; the default
 // route comes first for display, its rule (MATCH) last.
-func Template() []Route {
-	return []Route{
+func Template() Table {
+	t := Table{
 		{ID: Default, Name: "默认", Color: "--r-default", Summary: "没命中其他规则的流量"},
 		{ID: "ai", Name: "AI 服务", Color: "--r-ai", Summary: "OpenAI · Claude · Gemini · Perplexity 等", Rules: suffixes(
 			"openai.com", "chatgpt.com", "oaistatic.com", "oaiusercontent.com", "sora.com",
@@ -79,6 +149,12 @@ func Template() []Route {
 			"GEOSITE,private", "GEOSITE,cn", "GEOIP,private,no-resolve", "GEOIP,CN,no-resolve",
 		}},
 	}
+	for i, r := range t {
+		if !r.Direct {
+			t[i].Group, t[i].Auto = r.Name, r.Name+"·自动"
+		}
+	}
+	return t
 }
 
 func suffixes(domains ...string) []string {

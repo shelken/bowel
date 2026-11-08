@@ -49,7 +49,7 @@ type App struct {
 	dataDir   string
 	settings  *settings.Store
 	providers *provider.Store
-	routes    []routes.Route
+	routes    routes.Table
 	core      *core.Manager
 	mon       *monitor.Monitor
 	loc       *locate.Locator
@@ -499,7 +499,7 @@ func (a *App) pointGlobal() {
 	if c, err := a.core.Client(); err == nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
-		_ = c.Select(ctx, "GLOBAL", routes.Group(a.route(routes.Default)))
+		_ = c.Select(ctx, "GLOBAL", a.route(routes.Default).Group)
 	}
 }
 
@@ -909,11 +909,11 @@ func (a *App) selectNode(routeID, node string) error {
 	defer done()
 	target := node
 	if node == "" {
-		target = routes.Auto(r)
+		target = r.Auto
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := c.Select(ctx, routes.Group(r), target); err != nil {
+	if err := c.Select(ctx, r.Group, target); err != nil {
 		return err
 	}
 	a.refresh()
@@ -933,7 +933,7 @@ func (a *App) testRoute(ctx context.Context, routeID string) error {
 	defer done()
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
-	_, err = c.GroupDelay(ctx, routes.Group(r), a.settings.Get().TestURL, 5*time.Second)
+	_, err = c.GroupDelay(ctx, r.Group, a.settings.Get().TestURL, 5*time.Second)
 	a.refresh()
 	return err
 }
@@ -988,7 +988,7 @@ func (a *App) locateExits(force bool) {
 		if r.Direct {
 			continue
 		}
-		if n := currentNode(px, r); n != "" && !seen[n] {
+		if n, _ := r.Current(px); n != "" && !seen[n] {
 			seen[n] = true
 			if force {
 				_, _ = a.probeErr(context.Background(), n)
@@ -999,18 +999,6 @@ func (a *App) locateExits(force bool) {
 	}
 }
 
-// currentNode is the node a route uses now, following its automatic group.
-func currentNode(px map[string]mihomo.Proxy, r routes.Route) string {
-	g, ok := px[routes.Group(r)]
-	if !ok {
-		return ""
-	}
-	if g.Now == routes.Auto(r) {
-		return px[routes.Auto(r)].Now
-	}
-	return g.Now
-}
-
 // noticeSwitches records a route's automatic group moving off a failed node.
 func (a *App) noticeSwitches() {
 	a.mu.Lock()
@@ -1019,10 +1007,10 @@ func (a *App) noticeSwitches() {
 		if r.Direct {
 			continue
 		}
-		n := currentNode(a.proxies, r)
+		n, auto := r.Current(a.proxies)
 		prev := a.lastNode[r.ID]
 		a.lastNode[r.ID] = n
-		if prev == "" || prev == n || a.proxies[routes.Group(r)].Now != routes.Auto(r) {
+		if prev == "" || prev == n || !auto {
 			continue
 		}
 		if p, ok := a.proxies[prev]; ok && len(p.History) > 0 && p.History[len(p.History)-1].Delay == 0 {
@@ -1209,7 +1197,7 @@ func (a *App) reroute(r routes.UserRule, keep string) int {
 		if len(cn.Chains) > 0 {
 			group = cn.Chains[len(cn.Chains)-1]
 		}
-		if keep == "" || a.routeOfGroup(group, cn.Rule) != keep {
+		if keep == "" || a.routes.OfChain(group, cn.Rule) != keep {
 			ids = append(ids, cn.ID)
 		}
 	}
@@ -1221,23 +1209,6 @@ func (a *App) reroute(r routes.UserRule, keep string) int {
 }
 
 // ---- Activity ----
-
-// routeOfGroup maps a mihomo group name (or DIRECT) to a route id.
-func (a *App) routeOfGroup(group, rule string) string {
-	for _, r := range a.routes {
-		if !r.Direct && (group == routes.Group(r) || group == routes.Auto(r)) {
-			return r.ID
-		}
-	}
-	if group == "DIRECT" && rule != "" && rule != "Match" {
-		for _, r := range a.routes {
-			if r.Direct {
-				return r.ID
-			}
-		}
-	}
-	return ""
-}
 
 // display is a node's name without Moho's provider marker.
 func display(node string) string {
@@ -1290,20 +1261,6 @@ func providerOf(node string) string {
 	return ""
 }
 
-// groupTitle is a chain's step as the interface shows it: a route's group
-// by the route's title, anything else (a node, DIRECT) as it is.
-func (a *App) groupTitle(name string) string {
-	for _, r := range a.routes {
-		switch name {
-		case routes.Group(r):
-			return routes.Title(r)
-		case routes.Auto(r):
-			return routes.Title(r) + i18n.T("·自动", " · Auto")
-		}
-	}
-	return name
-}
-
 func (a *App) convConn(c monitor.Conn) Conn {
 	group := ""
 	if len(c.Chains) > 0 {
@@ -1311,12 +1268,12 @@ func (a *App) convConn(c monitor.Conn) Conn {
 	}
 	v := Conn{
 		ID: c.ID, App: c.App, Process: c.Process, Host: c.Host, IP: c.IP, Port: c.Port, Network: c.Network,
-		Rule: c.Rule, Payload: c.Payload, Route: a.routeOfGroup(group, c.Rule),
+		Rule: c.Rule, Payload: c.Payload, Route: a.routes.OfChain(group, c.Rule),
 		Down: c.Down, Up: c.Up, DownRate: c.DownRate, UpRate: c.UpRate, Start: c.Start, End: c.End,
 		Status: c.Status, Error: c.Error,
 	}
 	for i := len(c.Chains) - 1; i >= 0; i-- {
-		v.Chain = append(v.Chain, a.groupTitle(a.display(c.Chains[i])))
+		v.Chain = append(v.Chain, a.routes.StepTitle(a.display(c.Chains[i])))
 	}
 	if len(c.Chains) > 1 || (len(c.Chains) == 1 && c.Chains[0] != "DIRECT" && group != c.Chains[0]) {
 		v.Node = a.display(c.Chains[0])
@@ -1383,7 +1340,7 @@ func (a *App) buildTick() Tick {
 		TodayDown: n.TodayDown, TodayUp: n.TodayUp, MonthDown: n.MonthDown, Apps: []AppRate{}, Events: []Event{}}
 	for g, v := range n.ByGroup {
 		// A DIRECT group can be the direct route or the default's DIRECT; count it as direct.
-		id := a.routeOfGroup(g, "x")
+		id := a.routes.OfChain(g, "x")
 		if id != "" {
 			t.ByRoute[id] += v
 		}
@@ -1397,7 +1354,7 @@ func (a *App) buildTick() Tick {
 	}
 	for g, v := range n.GroupBytes {
 		if d := v - a.groupSeen[g]; d > 0 {
-			if id := a.routeOfGroup(g, "x"); id != "" {
+			if id := a.routes.OfChain(g, "x"); id != "" {
 				a.routeBytes[id] += d
 			}
 		}
@@ -1427,7 +1384,7 @@ func (a *App) buildTick() Tick {
 		if !seen || c.DownRate > b.rate || c.DownRate == b.rate &&
 			(c.Start.Before(b.start) || c.Start.Equal(b.start) && c.ID > b.id) {
 			best[c.App] = top{c.DownRate, c.Start, c.ID}
-			r.Host, r.Route = c.Host, a.routeOfGroup(c.Group, c.Rule)
+			r.Host, r.Route = c.Host, a.routes.OfChain(c.Group, c.Rule)
 		}
 	}
 	for _, r := range apps {
@@ -1447,7 +1404,7 @@ func (a *App) buildTick() Tick {
 		if len(e.Chains) > 0 {
 			group = e.Chains[len(e.Chains)-1]
 		}
-		ev := Event{Time: e.Time, Text: e.App + " → " + e.Host, Route: a.routeOfGroup(group, "x"), Failed: e.Failed}
+		ev := Event{Time: e.Time, Text: e.App + " → " + e.Host, Route: a.routes.OfChain(group, "x"), Failed: e.Failed}
 		if len(e.Chains) > 1 {
 			ev.Node = a.display(e.Chains[0])
 		}
@@ -1588,8 +1545,7 @@ func (a *App) snapshot() Snapshot {
 		}
 		rv.Rules += rv.Mine
 		if !r.Direct {
-			rv.Auto = px[routes.Group(r)].Now == routes.Auto(r)
-			rv.Node = currentNode(px, r)
+			rv.Node, rv.Auto = r.Current(px)
 			if rv.Node == "DIRECT" {
 				rv.Node = ""
 			}
@@ -1601,7 +1557,7 @@ func (a *App) snapshot() Snapshot {
 	}
 
 	// Exit and the user's place.
-	if n := currentNode(px, a.route(routes.Default)); n != "" && n != "DIRECT" {
+	if n, _ := a.route(routes.Default).Current(px); n != "" && n != "DIRECT" {
 		snap.Exit = &Exit{Node: n, Where: view(n).Where}
 	}
 	if you != nil {

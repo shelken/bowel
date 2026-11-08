@@ -27,7 +27,7 @@ type ProviderRef struct {
 // Input is everything the runtime config is made of.
 type Input struct {
 	Providers  []ProviderRef
-	Routes     []routes.Route
+	Routes     routes.Table
 	UserRules  []routes.UserRule // before the routes' own
 	Mode       string
 	MixedPort  int
@@ -165,7 +165,7 @@ func BuildConfig(in Input) ([]byte, error) {
 			if r.ID != u.Route {
 				continue
 			}
-			target := routes.Group(r)
+			target := r.Group
 			if r.Direct {
 				target = "DIRECT"
 			}
@@ -180,12 +180,12 @@ func BuildConfig(in Input) ([]byte, error) {
 			continue
 		}
 		groups = append(groups,
-			withNodes(map[string]any{"name": routes.Auto(r), "type": "url-test", "url": in.TestURL, "interval": o.URLTestInterval, "tolerance": o.URLTestTolerance, "lazy": true}),
-			withNodes(map[string]any{"name": routes.Group(r), "type": "select"}, routes.Auto(r)),
+			withNodes(map[string]any{"name": r.Auto, "type": "url-test", "url": in.TestURL, "interval": o.URLTestInterval, "tolerance": o.URLTestTolerance, "lazy": true}),
+			withNodes(map[string]any{"name": r.Group, "type": "select"}, r.Auto),
 		)
 		if r.ID != routes.Default {
 			for _, rule := range r.Rules {
-				rules = append(rules, withTarget(rule, routes.Group(r)))
+				rules = append(rules, withTarget(rule, r.Group))
 			}
 		}
 	}
@@ -198,7 +198,7 @@ func BuildConfig(in Input) ([]byte, error) {
 	if def.Name == "" {
 		return nil, errors.New(i18n.T("模板里没有默认路由", "The template has no default route"))
 	}
-	rules = append(rules, "MATCH,"+routes.Group(def))
+	rules = append(rules, "MATCH,"+def.Group)
 	groups = append(groups, withNodes(map[string]any{"name": ProbeGroup, "type": "select"}, "DIRECT"))
 	cfg["proxy-groups"] = groups
 	cfg["rules"] = rules
