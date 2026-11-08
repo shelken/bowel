@@ -801,8 +801,10 @@ func migrateData(dir string) {
 
 // appOnly says whether next differs from old only in what the core does
 // not see: the language, starting hidden, the theme color, the appearance,
-// the skin and the board's borders.
+// the skin and the board's borders, and which core to drive, which is read
+// at the next start.
 func appOnly(old, next settings.Settings) bool {
+	next.CoreSource, next.CoreAddr, next.CoreSecret = old.CoreSource, old.CoreAddr, old.CoreSecret
 	next.Language, next.StartHidden, next.Accent, next.Appearance = old.Language, old.StartHidden, old.Accent, old.Appearance
 	next.Skin, next.Borders = old.Skin, old.Borders
 	next.MCPPolicy = old.MCPPolicy // the MCP server's, not the core's

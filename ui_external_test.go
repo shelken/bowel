@@ -187,3 +187,48 @@ func TestExternalActivityOnlyReads(t *testing.T) {
 		t.Error("a close button is on the page")
 	}
 }
+
+// The core page is where bowel's own core becomes an external one, and
+// back. It takes effect at the next start, and says so.
+func TestCoreSourceChoice(t *testing.T) {
+	u := fixtureUI()
+	u.snap.Settings = settings.Defaults.Clone()
+	tt := ui.NewTesterWith(u.settingsView, 760, 560, ui.TesterOptions{})
+	tt.Advance(time.Second)
+	if err := tt.Click("内核"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	wantTexts(t, tt, "内核来源", "内置 mihomo", "外部内核", "日志级别")
+	if tt.HasText("控制器地址") {
+		t.Errorf("the address is asked for before the external core is chosen: %q", tt.Texts())
+	}
+	if err := tt.Click("外部内核"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if s := u.shownSettings(); s.CoreSource != "external" || s.CoreAddr != "127.0.0.1:9090" {
+		t.Errorf("chose %q at %q", s.CoreSource, s.CoreAddr)
+	}
+	wantTexts(t, tt, "控制器地址", "密钥", "重启")
+}
+
+func TestCoreSourceChoiceOnAnExternalCore(t *testing.T) {
+	u := externalUI()
+	u.snap.Settings = settings.Defaults.Clone()
+	u.snap.Settings.CoreSource, u.snap.Settings.CoreAddr = "external", "127.0.0.1:9090"
+	tt := ui.NewTesterWith(u.settingsView, 760, 560, ui.TesterOptions{})
+	tt.Advance(time.Second)
+	if err := tt.Click("内核"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	wantTexts(t, tt, "内核来源", "控制器地址", "密钥")
+	if err := tt.Click("内置 mihomo"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if s := u.shownSettings(); s.CoreSource != "" {
+		t.Errorf("source %q", s.CoreSource)
+	}
+}

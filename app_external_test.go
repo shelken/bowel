@@ -285,3 +285,45 @@ func TestExternalCoreRefusesToBeConfigured(t *testing.T) {
 		t.Errorf("the external core was changed: %v", writes)
 	}
 }
+
+// Which core bowel drives is read at the next start: choosing another
+// leaves the running core alone, whichever core that is.
+func TestCoreSourceChangesWaitForARestart(t *testing.T) {
+	var mu sync.Mutex
+	var writes []string
+	a, _ := externalApp(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			mu.Lock()
+			writes = append(writes, r.Method+" "+r.URL.Path)
+			mu.Unlock()
+		}
+		switch r.URL.Path {
+		case "/version":
+			io.WriteString(w, `{"version":"sing-box 1.14.4"}`)
+		case "/proxies":
+			io.WriteString(w, `{"proxies":{"GLOBAL":{"name":"GLOBAL","type":"Fallback","now":"main","all":["main"]}}}`)
+		default:
+			w.WriteHeader(http.StatusNoContent)
+		}
+	}))
+	for name, fn := range map[string]func(*settings.Settings){
+		"address": func(s *settings.Settings) { s.CoreAddr = "127.0.0.1:19090" },
+		"secret":  func(s *settings.Settings) { s.CoreSecret = "x" },
+		"source":  func(s *settings.Settings) { s.CoreSource = "" },
+	} {
+		if err := a.updateSettings(fn); err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	if s := a.settings.Get(); s.CoreAddr != "127.0.0.1:19090" || s.CoreSecret != "x" || s.CoreSource != "" {
+		t.Errorf("not kept: %+v", s)
+	}
+	if !a.core.External() {
+		t.Error("the running core changed")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(writes) > 0 {
+		t.Errorf("the core was changed: %v", writes)
+	}
+}

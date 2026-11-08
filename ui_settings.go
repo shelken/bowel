@@ -764,12 +764,49 @@ func (u *UI) inboundSection(c *ui.Context, p *pal, s settings.Settings) {
 	})
 }
 
+// coreSource chooses whose core bowel drives. The choice is read when bowel
+// starts, so a change waits for the next start.
+func (u *UI) coreSource(c *ui.Context, p *pal, s settings.Settings) {
+	optRow(c, p, i18n.T("内核来源", "Core source"), i18n.T("bowel 自带的 mihomo，或一个已在运行的外部内核（如 sing-box）；改动在重启 bowel 后生效", "The mihomo bowel brings, or an external core that is already running (sing-box, say); a change applies when bowel restarts"), func() {
+		labels := []string{i18n.T("内置 mihomo", "Built-in mihomo"), i18n.T("外部内核", "External core")}
+		sel := 0
+		if s.CoreSource == "external" {
+			sel = 1
+		}
+		if actSeg(c.Key("source"), p, &sel, labels).Changed() {
+			u.setOpt(func(s *settings.Settings) {
+				s.CoreSource = []string{"", "external"}[sel]
+				if sel == 1 && s.CoreAddr == "" {
+					s.CoreAddr = "127.0.0.1:9090"
+				}
+			})
+		}
+	})
+	if s.CoreSource != "external" {
+		return
+	}
+	optRow(c, p, i18n.T("控制器地址", "Controller address"), i18n.T("外部内核的 Clash API 地址，主机:端口", "The external core's Clash API, as host:port"), func() {
+		u.optText(c, p, "coreaddr", i18n.T("控制器地址", "Controller address"), s.CoreAddr, 180, func(v string) {
+			v = strings.TrimSpace(v)
+			u.setOpt(func(s *settings.Settings) { s.CoreAddr = v })
+		}).Placeholder("127.0.0.1:9090")
+	})
+	optRow(c, p, i18n.T("密钥", "Secret"), i18n.T("控制器要求时填写，没有就留空", "If the controller asks for one; empty if not"), func() {
+		u.optText(c, p, "coresecret", i18n.T("密钥", "Secret"), s.CoreSecret, 180, func(v string) {
+			u.setOpt(func(s *settings.Settings) { s.CoreSecret = v })
+		})
+	})
+}
+
 func (u *UI) coreSection(c *ui.Context, p *pal, s settings.Settings) {
 	if u.snap.External {
 		sectionNote(c, p, i18n.T("外部内核由它自己管理，bowel 不会改动它", "The external core manages itself; bowel does not change it"))
+		u.coreSource(c, p, s)
 		return
 	}
 	sectionNote(c, p, i18n.T("mihomo 自己的行为", "How mihomo itself behaves"))
+	u.coreSource(c, p, s)
+	optHeading(c, p, "mihomo")
 	optRow(c, p, i18n.T("日志级别", "Log level"), i18n.T("「日志」页里内核日志的详细程度", "How detailed the core's log on the Log page is"), func() {
 		u.optChoice(c, p, "log", settings.LogLevels, s.LogLevel, func(v string) {
 			u.setOpt(func(s *settings.Settings) { s.LogLevel = v })
