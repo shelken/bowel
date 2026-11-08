@@ -54,3 +54,28 @@ func TestExternalRoutePicker(t *testing.T) {
 		}
 	}
 }
+
+// An external core has no mode or takeover for bowel to offer: those
+// cells say what the core is and where it is, and do not open.
+func TestExternalBoardShowsTheCore(t *testing.T) {
+	u := externalUI()
+	u.snap.Core.Version = "sing-box 1.14.4"
+	u.snap.ControllerTCP = "127.0.0.1:9090"
+	tt := ui.NewTesterWith(u.view, 1060, 760, ui.TesterOptions{})
+	tt.Advance(time.Second)
+	shot(t, tt, "external-home")
+	wantTexts(t, tt, "sing-box 1.14.4", "127.0.0.1:9090")
+	for _, s := range []string{"系统代理", "TUN", "全局", "接管", "自动选最快", "来自"} {
+		if tt.HasText(s) {
+			t.Errorf("the board shows %q: %q", s, tt.Texts())
+		}
+	}
+	for _, id := range []string{"mode", "takeover"} {
+		u.home.x = id
+		tt.Frame()
+		tt.Advance(time.Second)
+		if u.home.x != "" {
+			t.Errorf("the %s cell opened", id)
+		}
+	}
+}

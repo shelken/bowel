@@ -328,7 +328,7 @@ func variant(r ui.Rect) string {
 
 func (u *UI) homePage(c *ui.Context, p *pal) {
 	h := &u.home
-	if !u.snap.Takeover.On && h.x != "" {
+	if !u.snap.Takeover.On && h.x != "" || u.snap.External && (h.x == "mode" || h.x == "takeover") {
 		h.x, h.sub = "", ""
 	}
 	c.OnWindowShortcut(0, ui.KeyEscape, func() {
@@ -397,7 +397,7 @@ func (u *UI) cell(c *ui.Context, p *pal, cl cell, box, normalBox ui.Rect) {
 	}
 	if v != "expanded" && cl.id != "map" || cl.id == "map" && v != "expanded" {
 		e.OnClick(func() {
-			if u.snap.Takeover.On {
+			if u.snap.Takeover.On && !(u.snap.External && (cl.id == "mode" || cl.id == "takeover")) {
 				u.home.x, u.home.sub, u.home.query, u.home.region = cl.id, "", "", ""
 			}
 		})
@@ -830,6 +830,10 @@ func wavyLine(path *ui.Path, gap float32, a, b [2]float32, down bool) {
 }
 
 func (u *UI) viewOf(c *ui.Context, p *pal, id, v string, box ui.Rect) {
+	if u.snap.External && (id == "mode" || id == "takeover") {
+		u.coreCell(c, p, id, v)
+		return
+	}
 	switch v {
 	case "normal":
 		u.normalView(c, p, id)
@@ -978,7 +982,9 @@ func (u *UI) compactView(c *ui.Context, p *pal, id, v string) {
 			})
 		}, sub, func() {
 			if ok {
-				ui.Text(c, i18n.T("来自 ", "From ")+u.providerName(ex.Provider)).FontSize(12).TextColor(p.ink2).MaxLines(1).Ellipsis("…")
+				if !s.External {
+					ui.Text(c, i18n.T("来自 ", "From ")+u.providerName(ex.Provider)).FontSize(12).TextColor(p.ink2).MaxLines(1).Ellipsis("…")
+				}
 				mode := i18n.T("手动选择", "Manual")
 				if u.route("default").Auto {
 					mode = i18n.T("自动选最快", "Auto-pick fastest")
@@ -1185,6 +1191,10 @@ func (u *UI) heroNormal(c *ui.Context, p *pal) {
 						if ex.Type != "" {
 							lead += ex.Type + " · "
 						}
+						if s.External { // its nodes have no provider
+							ui.Text(c, strings.TrimSuffix(strings.TrimSpace(lead), "·")).FontSize(13.5).TextColor(p.ink2)
+							return
+						}
 						ui.RichText(c, ui.Span{Text: lead + i18n.T("来自 ", "From "), Size: 13.5, Color: p.ink2},
 							ui.Span{Text: u.providerName(ex.Provider), Size: 13.5, Weight: 600, Color: p.ink}).
 							MaxLines(1).Ellipsis("…").Shrink(1).MinWidth(0).Tooltip(u.providerName(ex.Provider))
@@ -1200,6 +1210,8 @@ func (u *UI) heroNormal(c *ui.Context, p *pal) {
 				})
 			case s.Mode == "direct":
 				ui.Text(c, i18n.T("直连模式：所有流量不经过任何节点，规则暂停。适合排查网络问题。", "Direct mode: no traffic goes through any node and rules are paused. Useful for troubleshooting the network.")).FontSize(13.5).TextColor(p.ink2)
+			case s.External:
+				ui.Text(c, i18n.T("这个内核里还没有节点。", "The core has no nodes yet.")).FontSize(13.5).TextColor(p.ink2)
 			default:
 				ui.Text(c, i18n.T("添加一个提供商（订阅链接、节点链接或配置文件），节点就会出现在这里。现在所有流量都在直接连接。", "Add a provider (a subscription link, node link or config file) and its nodes show up here. For now all traffic connects directly.")).FontSize(13.5).TextColor(p.ink2)
 			}
@@ -1234,6 +1246,9 @@ func (u *UI) heroNormal(c *ui.Context, p *pal) {
 			ui.Row(c).Gap(10).Margin(16, 0, 0, 0).Children(func() {
 				pill(c, p, i18n.T("换节点", "Change node"), true).OnClick(func() { u.home.x = "hero" })
 				def := u.route("default")
+				if s.External {
+					return
+				}
 				g := pill(c, p, i18n.T("自动选最快", "Auto-pick fastest"), false)
 				if def.Auto {
 					g.Border(1.5, p.ink)
@@ -1244,7 +1259,7 @@ func (u *UI) heroNormal(c *ui.Context, p *pal) {
 					}
 				})
 			})
-		} else if len(s.Nodes) == 0 && s.Mode != "direct" {
+		} else if len(s.Nodes) == 0 && s.Mode != "direct" && !s.External {
 			pill(c, p, i18n.T("添加提供商", "Add provider"), true).AlignSelf(ui.Start).OnClick(func() { u.page = "providers" })
 		}
 	})
@@ -2324,4 +2339,26 @@ func (u *UI) picked(r RouteView, n NodeView) bool {
 		return n.Name == r.Picked
 	}
 	return n.Name == r.Node
+}
+
+// coreCell stands for the mode and takeover cells when the core is
+// someone else's: bowel sets neither, so it says which core this is and
+// where it listens.
+func (u *UI) coreCell(c *ui.Context, p *pal, id, v string) {
+	s := u.snap
+	label, value, note := i18n.T("内核", "Core"), s.Core.Version, i18n.T("外部内核，由它自己管理", "External core, managed by itself")
+	if id == "takeover" {
+		label, value, note = i18n.T("控制器", "Controller"), s.ControllerTCP, i18n.T("bowel 只切换节点，不改动它", "bowel only switches nodes, nothing else")
+	}
+	if v != "normal" {
+		compact(c, p, v, id, label, func(size float32) {
+			disp(ui.Text(c, value), p).FontSize(size).FontWeight(600).TextColor(p.ink).NoWrap()
+		}, note, nil)
+		return
+	}
+	pad(c, 16).Children(func() {
+		cellKicker(c, p, id, label)
+		disp(ui.Text(c, value), p).FontSize(20).FontWeight(600).TextColor(p.ink).MaxLines(2).Ellipsis("…").Margin(10, 0, 0, 0)
+		ui.Text(c, note).FontSize(12).TextColor(p.mute).Margin(12, 0, 0, 0).MaxLines(2).Ellipsis("…")
+	})
 }
