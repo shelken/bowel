@@ -253,3 +253,24 @@ func TestSocketAndBridge(t *testing.T) {
 		t.Error("the socket should go when the server stops")
 	}
 }
+
+// A tool whose arguments depend on what the app knows says it when listed,
+// not when the server was built.
+func TestSchemaIsReadWhenListed(t *testing.T) {
+	choices := []string{"a"}
+	c := start(t, &Server{Name: "t", Version: "1", Tools: []Tool{{
+		Name:   "pick",
+		Schema: func() map[string]any { return map[string]any{"type": "object", "enum": choices} },
+	}}})
+	enum := func() []any {
+		tools := c.call("tools/list", nil)["result"].(map[string]any)["tools"].([]any)
+		return tools[0].(map[string]any)["inputSchema"].(map[string]any)["enum"].([]any)
+	}
+	if got := enum(); len(got) != 1 {
+		t.Fatalf("enum %v", got)
+	}
+	choices = []string{"a", "b"}
+	if got := enum(); len(got) != 2 {
+		t.Errorf("the schema was not read again: %v", got)
+	}
+}

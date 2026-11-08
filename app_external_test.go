@@ -212,7 +212,7 @@ func TestExternalCoreMCPToolsDoNotListNoRoutes(t *testing.T) {
 		}
 	}))
 	for _, tool := range a.mcpServer().Tools {
-		props, _ := tool.Input["properties"].(map[string]any)
+		props, _ := tool.InputSchema()["properties"].(map[string]any)
 		if route, ok := props["route"].(map[string]any); ok {
 			if d, _ := route["description"].(string); strings.Contains(d, ": .") || !strings.Contains(d, "list_routes") {
 				t.Errorf("%s: route is described as %q", tool.Name, d)
@@ -446,4 +446,36 @@ func TestProbeFailuresAreLogged(t *testing.T) {
 	if out.Len() != 0 {
 		t.Errorf("an external core was probed: %q", out.String())
 	}
+}
+
+// The routes of an external core are found after the MCP server is built, so
+// the tools say them when they are listed.
+func TestExternalRoutesAreChoicesOfTheTools(t *testing.T) {
+	a, _ := externalApp(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/version":
+			io.WriteString(w, `{"version":"sing-box 1.14.4"}`)
+		case "/proxies":
+			io.WriteString(w, `{"proxies":{"GLOBAL":{"name":"GLOBAL","type":"Fallback","now":"main","all":["main"]},
+				"main":{"name":"main","type":"Selector","now":"n1","all":["n1"]},
+				"video":{"name":"video","type":"Selector","now":"n1","all":["n1"]},"n1":{"name":"n1","type":"Shadowsocks"}}}`)
+		case "/rules":
+			io.WriteString(w, `{"rules":[{"type":"default","payload":"a","proxy":"route(video)"}]}`)
+		default:
+			w.WriteHeader(http.StatusNoContent)
+		}
+	}))
+	srv := a.mcpServer() // before the routes are known
+	a.refresh()
+	for _, tool := range srv.Tools {
+		if tool.Name != "select_node" {
+			continue
+		}
+		route, _ := tool.InputSchema()["properties"].(map[string]any)["route"].(map[string]any)
+		if got := fmt.Sprint(route["enum"]); got != "[default video]" {
+			t.Errorf("route may be %s", got)
+		}
+		return
+	}
+	t.Fatal("no select_node")
 }

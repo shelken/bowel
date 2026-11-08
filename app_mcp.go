@@ -523,16 +523,21 @@ func str(desc string, enum ...string) map[string]any {
 	return m
 }
 
-func (a *App) mcpServer() *mcp.Server {
+// routeArg is the schema of a tool's route argument, with the routes as
+// they are now: an external core's are found after the server is built.
+func (a *App) routeArg() map[string]any {
 	table := a.routeTable()
 	routeIDs := make([]string, len(table))
 	for i, r := range table {
 		routeIDs[i] = r.ID
 	}
-	routeArg := str("A route's id: "+strings.Join(routeIDs, ", ")+".", routeIDs...)
-	if len(routeIDs) == 0 { // an external core's routes are not known yet
-		routeArg = str("A route's id, as list_routes gives it.")
+	if len(routeIDs) == 0 {
+		return str("A route's id, as list_routes gives it.")
 	}
+	return str("A route's id: "+strings.Join(routeIDs, ", ")+".", routeIDs...)
+}
+
+func (a *App) mcpServer() *mcp.Server {
 	return &mcp.Server{
 		Name: "bowel", Title: "bowel", Version: mygo.App.Version(),
 		Instructions: mcpInstructions,
@@ -692,7 +697,7 @@ func (a *App) mcpServer() *mcp.Server {
 			{
 				Name: "test_route", Title: "Test a route's nodes",
 				Description: "Measures the delay of a route's nodes now, and returns them. Changes nothing.",
-				Input:       obj(map[string]any{"route": routeArg}, "route"),
+				Schema:      func() map[string]any { return obj(map[string]any{"route": a.routeArg()}, "route") },
 				Run: func(ctx context.Context, s *mcp.Session, raw json.RawMessage) (any, error) {
 					var p struct{ Route string }
 					if err := mcp.Args(raw, &p); err != nil {
@@ -795,7 +800,9 @@ func (a *App) mcpServer() *mcp.Server {
 			{
 				Name: "select_node", Title: "Choose a route's node",
 				Description: "Makes a proxied route use a node, or pick the fastest by itself (node \"auto\"). Nodes are named as list_routes gives them.",
-				Input:       obj(map[string]any{"route": routeArg, "node": str("A node's name or label, or \"auto\".")}, "route", "node"),
+				Schema: func() map[string]any {
+					return obj(map[string]any{"route": a.routeArg(), "node": str("A node's name or label, or \"auto\".")}, "route", "node")
+				},
 				Run: func(ctx context.Context, s *mcp.Session, raw json.RawMessage) (any, error) {
 					var p struct{ Route, Node string }
 					if err := mcp.Args(raw, &p); err != nil {
@@ -832,11 +839,13 @@ func (a *App) mcpServer() *mcp.Server {
 			{
 				Name: "add_rule", Title: "Add a rule",
 				Description: "Sends traffic to a route with a rule of the user's, which wins over the built-in ones. It replaces a rule for the same traffic. Open connections it now sends elsewhere are closed, so the change shows at once. kind: suffix (the domain and its subdomains; the default for names), domain (that name only), keyword (names containing it), ip (an address or CIDR; the default for addresses).",
-				Input: obj(map[string]any{
-					"target": str("A domain, *.domain, URL, keyword or IP/CIDR."),
-					"route":  routeArg,
-					"kind":   str("The kind of rule; guessed when left out.", routes.Kinds...),
-				}, "target", "route"),
+				Schema: func() map[string]any {
+					return obj(map[string]any{
+						"target": str("A domain, *.domain, URL, keyword or IP/CIDR."),
+						"route":  a.routeArg(),
+						"kind":   str("The kind of rule; guessed when left out.", routes.Kinds...),
+					}, "target", "route")
+				},
 				Run: func(ctx context.Context, s *mcp.Session, raw json.RawMessage) (any, error) {
 					var p struct{ Target, Route, Kind string }
 					if err := mcp.Args(raw, &p); err != nil {
