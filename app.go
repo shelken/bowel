@@ -1422,13 +1422,14 @@ func (a *App) buildTick() Tick {
 	// Today's share per route: the bytes since the last tick, as the
 	// monitor counted them, however long ago that was.
 	day := time.Now().Format("2006-01-02")
+	table := a.routeTable() // before a.mu: it takes it too
 	a.mu.Lock()
 	if a.shareDay != day {
 		a.shareDay, a.routeBytes = day, map[string]int64{}
 	}
 	for g, v := range n.GroupBytes {
 		if d := v - a.groupSeen[g]; d > 0 {
-			if id := a.routeTable().OfChain(g, "x"); id != "" {
+			if id := table.OfChain(g, "x"); id != "" {
 				a.routeBytes[id] += d
 			}
 		}

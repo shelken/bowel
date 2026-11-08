@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -11,7 +12,9 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/egoist/mygo"
 
@@ -327,5 +330,44 @@ func TestCoreSourceChangesWaitForARestart(t *testing.T) {
 	defer mu.Unlock()
 	if len(writes) > 0 {
 		t.Errorf("the core was changed: %v", writes)
+	}
+}
+
+// The tick counts today's bytes per route while it holds a.mu, and finds
+// the route through the table, which takes a.mu too. Once it did both at
+// the same time, and the whole app hung at the first byte of traffic.
+func TestTickWithTrafficDoesNotHang(t *testing.T) {
+	var polls atomic.Int64
+	a, _ := externalApp(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/version":
+			io.WriteString(w, `{"version":"sing-box 1.14.4"}`)
+		case "/proxies":
+			io.WriteString(w, `{"proxies":{"GLOBAL":{"name":"GLOBAL","type":"Fallback","now":"main","all":["main"]},
+				"main":{"name":"main","type":"Selector","now":"n1","all":["n1"]},"n1":{"name":"n1","type":"Shadowsocks"}}}`)
+		case "/rules":
+			io.WriteString(w, `{"rules":[]}`)
+		case "/connections":
+			fmt.Fprintf(w, `{"connections":[{"id":"c1","download":%d,"upload":0,"start":%q,"chains":["n1","main"],"rule":"default","metadata":{"host":"a.example","destinationPort":"443","network":"tcp"}}]}`,
+				1000*polls.Add(1), time.Now().Format(time.RFC3339))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	a.refresh()
+	deadline := time.Now().Add(10 * time.Second)
+	for a.mon.Now().GroupBytes["main"] == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the monitor counted no bytes")
+		}
+		a.mon.Wake()
+		time.Sleep(100 * time.Millisecond)
+	}
+	done := make(chan Tick, 1)
+	go func() { done <- a.buildTick() }()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("buildTick hangs")
 	}
 }
