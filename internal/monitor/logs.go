@@ -43,14 +43,16 @@ var dialFailRe = regexp.MustCompile(
 //
 //	[3066431264 5.0s] connection: open connection to example.org:443 using outbound/shadowsocks[node]: dial tcp 192.0.2.1:443: i/o timeout
 //	[3066431265 1.0s] connection: open packet connection to 192.0.2.9:53 using outbound/direct[direct]: refused
-//	[3066431266 0ms] connection: listen packet connection using outbound/vless[node]: closed
+//	[3066431266 0ms] connection: listen packet connection using  using outbound/vless[node]: closed
+//
+// (the listen line says "using" twice: sing-box's own wording)
 //
 // with a list of addresses in place of host:port once the name has been
 // resolved. It names the outbound that was dialed, not the rule's group,
 // and neither the client nor the process: those are in the other lines of
 // the connection, which carry the same id.
 var sbDialFailRe = regexp.MustCompile(
-	`^(?:\[(\d+) [^\]]*\] )?(?:connection: )?(open connection to|open packet connection to|listen packet connection)(?: (\S+))?(?: using outbound/[^\[\s]+\[(.*?)\])?: (.*)$`)
+	`^(?:\[(\d+) [^\]]*\] )?(?:connection: )?(open connection to|open packet connection to|listen packet connection(?: using)?)(?: (\S+))?(?: +using outbound/[^\[\s]+\[(.*?)\])?: (.*)$`)
 
 func parseSingBoxFailure(text string) (dialFailure, bool) {
 	g := sbDialFailRe.FindStringSubmatch(text)

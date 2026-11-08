@@ -86,7 +86,7 @@ func TestParseDialFailure(t *testing.T) {
 			dialFailure{Network: "tcp", Host: "192.0.2.1", Port: 80, Error: "refused"},
 		},
 		{
-			"[3 2s] connection: listen packet connection using outbound/vless[node]: closed",
+			"[3 2s] connection: listen packet connection using  using outbound/vless[node]: closed",
 			dialFailure{ID: "3", Network: "udp", Group: "node", Error: "closed"},
 		},
 	}
