@@ -57,10 +57,12 @@ func Discover(px map[string]mihomo.Proxy, rules []mihomo.Rule) Table {
 	return t
 }
 
-// target is the name a rule sends traffic to.
+// target is the name a rule sends traffic to. sing-box lists a route
+// action's options after the outbound: route(name,option,...).
 func target(proxy string) string {
 	if n, ok := strings.CutPrefix(proxy, "route("); ok {
-		return strings.TrimSuffix(n, ")")
+		n, _, _ = strings.Cut(strings.TrimSuffix(n, ")"), ",")
+		return n
 	}
 	return proxy
 }

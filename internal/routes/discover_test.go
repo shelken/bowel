@@ -79,6 +79,18 @@ func TestDiscover(t *testing.T) {
 			},
 		},
 		{
+			// sing-box prints a route action with its options after the
+			// outbound: route(video,override-port=443,udp-connect).
+			name:  "a route action with options still targets its outbound",
+			px:    px,
+			rules: []mihomo.Rule{rule("route(video,override-port=443,udp-connect)", "a"), rule("route(direct,tls-fragment)", "b")},
+			want: []string{
+				`default group="main" auto="" direct=false rules=0 --r-default`,
+				`video group="video" auto="" direct=false rules=1 --r-ai`,
+				`direct group="" auto="" direct=true rules=1 --r-direct`,
+			},
+		},
+		{
 			name:  "URLTest, nodes and names the core does not have are no routes",
 			px:    px,
 			rules: []mihomo.Rule{rule("route(fastest)", "a"), rule("route(n1)", "b"), rule("route(gone)", "c")},
