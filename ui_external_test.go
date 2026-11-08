@@ -7,6 +7,8 @@ import (
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
+
+	"github.com/oboo/moho/internal/settings"
 )
 
 // externalUI is the fixture as an external core would report it: no
@@ -135,5 +137,53 @@ func TestExternalHasNoProviderPage(t *testing.T) {
 	tt.Advance(time.Second)
 	if u.page != "home" {
 		t.Errorf("the provider page opened: %q", u.page)
+	}
+}
+
+// Settings about bowel's own core have nothing to set on someone else's:
+// the window keeps what is bowel's, and names the core as it is.
+func TestExternalSettingsWindow(t *testing.T) {
+	u := externalUI()
+	u.snap.Settings = settings.Defaults.Clone()
+	u.snap.Core.Version = "sing-box 1.14.4"
+	tt := ui.NewTesterWith(u.settingsView, 760, 560, ui.TesterOptions{})
+	tt.Advance(time.Second)
+	wantTexts(t, tt, "通用", "内核", "MCP", "关于", "sing-box 1.14.4")
+	for _, s := range []string{"入站", "规则", "DNS", "嗅探", "TUN", "GeoData", "外部控制", "mihomo"} {
+		if tt.HasText(s) {
+			t.Errorf("the window shows %q: %q", s, tt.Texts())
+		}
+	}
+	if err := tt.Click("内核"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if tt.HasText("日志级别") || tt.HasText("TLS 指纹") {
+		t.Errorf("the core page offers bowel's own core's options: %q", tt.Texts())
+	}
+}
+
+// An external core's connections can be read, not changed: no button
+// closes one, and no menu writes a rule for it.
+func TestExternalActivityOnlyReads(t *testing.T) {
+	u := actUI()
+	u.snap.External = true
+	tt := ui.NewTester(u.view, 1060, 760)
+	tt.Advance(time.Second)
+	if err := tt.Click("api.anthropic.com:443"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Advance(time.Second)
+	if u.act.open != "c04" {
+		t.Fatalf("open %q", u.act.open)
+	}
+	wantTexts(t, tt, "复制域名", "相关日志")
+	for _, s := range []string{"断开", "让它走…", "断开筛选结果"} {
+		if hasTextPart(tt, s) {
+			t.Errorf("the page offers %q: %q", s, tt.Texts())
+		}
+	}
+	if err := tt.Click("断开"); err == nil {
+		t.Error("a close button is on the page")
 	}
 }

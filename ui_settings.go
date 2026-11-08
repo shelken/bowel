@@ -270,15 +270,31 @@ func init() {
 	}
 }
 
+// sections are the pages the window lists: for someone else's core, only
+// what is bowel's own, since the rest sets bowel's core.
+func (u *UI) sections() []settingsSection {
+	if !u.snap.External {
+		return settingsSections
+	}
+	var own []settingsSection
+	for _, sec := range settingsSections {
+		if slices.Contains([]string{"general", "core", "mcp", "about"}, sec.id) {
+			own = append(own, sec)
+		}
+	}
+	return own
+}
+
 // settingsSection is the page chosen in the sidebar, the first at first.
 func (u *UI) settingsSection() settingsSection {
-	for _, sec := range settingsSections {
+	secs := u.sections()
+	for _, sec := range secs {
 		if sec.id == u.set.section {
 			return sec
 		}
 	}
-	u.set.section = settingsSections[0].id
-	return settingsSections[0]
+	u.set.section = secs[0].id
+	return secs[0]
 }
 
 func coreStateWord(state string) string {
@@ -312,7 +328,7 @@ func (u *UI) settingsSidebar(c *ui.Context, p *pal) {
 			sel = ""
 		}
 		ui.Sidebar(c.Key("nav"), &sel, func() {
-			for _, sec := range settingsSections {
+			for _, sec := range u.sections() {
 				ui.SidebarItem(c.Key(sec.id), sec.id, sec.icon, sec.name())
 			}
 		}).Grow(1).Padding(0, 10).Background(p.paper2).Label(i18n.T("设置", "Settings"))
@@ -336,8 +352,11 @@ func (u *UI) settingsSidebar(c *ui.Context, p *pal) {
 			}
 			ui.Box(c).Size(6, 6).Radius(p.r(3)).Background(col).Shrink(0)
 			ver := "mihomo"
+			if u.snap.External {
+				ver = ""
+			}
 			if cs.Version != "" {
-				ver += " " + cs.Version
+				ver = strings.TrimSpace(ver + " " + cs.Version)
 			}
 			// MinWidth(0): a line that doesn't wrap is otherwise as wide as
 			// its words, and a long version runs into the pane.
@@ -398,7 +417,7 @@ func (u *UI) searchResults(c *ui.Context, p *pal, words []string) {
 	optFind = f
 	defer func() { optFind = nil }()
 	s := u.shownSettings()
-	for _, sec := range settingsSections {
+	for _, sec := range u.sections() {
 		f.sec, f.head = sec.name(), func() { u.searchHead(c, p, sec) }
 		f.jump = func(title string) { u.searchJump(sec.id, title) }
 		ui.Column(c.Key(sec.id)).Children(func() { sec.body(u, c, p, s) })
@@ -746,6 +765,10 @@ func (u *UI) inboundSection(c *ui.Context, p *pal, s settings.Settings) {
 }
 
 func (u *UI) coreSection(c *ui.Context, p *pal, s settings.Settings) {
+	if u.snap.External {
+		sectionNote(c, p, i18n.T("外部内核由它自己管理，bowel 不会改动它", "The external core manages itself; bowel does not change it"))
+		return
+	}
 	sectionNote(c, p, i18n.T("mihomo 自己的行为", "How mihomo itself behaves"))
 	optRow(c, p, i18n.T("日志级别", "Log level"), i18n.T("「日志」页里内核日志的详细程度", "How detailed the core's log on the Log page is"), func() {
 		u.optChoice(c, p, "log", settings.LogLevels, s.LogLevel, func(v string) {
