@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -36,8 +35,10 @@ const (
 	SourceUnknown = "unknown"
 )
 
+// TraceURL is the page that says where a request came from.
+const TraceURL = "https://www.cloudflare.com/cdn-cgi/trace"
+
 const (
-	traceURL     = "https://www.cloudflare.com/cdn-cgi/trace"
 	probeTimeout = 8 * time.Second
 	// maxAge is how long a probe is trusted by Guess.
 	maxAge = 24 * time.Hour
@@ -84,7 +85,10 @@ func New(cachePath string) *Locator {
 }
 
 // Guess answers without the network: a cached probe (at most 24 h old), else
-// geo.FromName(display), else unknown.
+// geo.FromName(display), else an older probe, else unknown. An old probe is
+// still better than nothing for a node whose name says nothing.
+//
+// Fresh says whether a probe of node is recent enough for Guess to use first.
 func (l *Locator) Guess(node, display string) Result {
 	now := l.now()
 	l.mu.Lock()
@@ -109,7 +113,17 @@ func (l *Locator) Guess(node, display string) Result {
 		p := n.place
 		return Result{Place: &p, Source: SourceName, At: now}
 	}
+	if ok && r.Place != nil {
+		return r
+	}
 	return Result{Source: SourceUnknown, At: now}
+}
+
+func (l *Locator) Fresh(node string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	r, ok := l.cache[node]
+	return ok && r.Place != nil && l.now().Sub(r.At) <= maxAge
 }
 
 // Probe measures where node exits; node "DIRECT" measures the user's own
@@ -132,6 +146,11 @@ func (l *Locator) Probe(ctx context.Context, c *mihomo.Client, probePort int, no
 	if err != nil {
 		return Result{Source: SourceUnknown, At: l.now()}, err
 	}
+	return l.record(node, body)
+}
+
+// record keeps what a trace answer says about node's exit.
+func (l *Locator) record(node, body string) (Result, error) {
 	ip, loc, colo := parseTrace(body)
 	if ip == "" && loc == "" {
 		return Result{Source: SourceUnknown, At: l.now()}, errors.New("trace: no ip or loc in the answer")
@@ -142,7 +161,7 @@ func (l *Locator) Probe(ctx context.Context, c *mihomo.Client, probePort int, no
 	}
 	l.mu.Lock()
 	l.cache[node] = r
-	err = l.saveLocked()
+	err := l.saveLocked()
 	l.mu.Unlock()
 	return r, err
 }
@@ -155,23 +174,7 @@ func fetchTrace(ctx context.Context, probePort int) (string, error) {
 		Timeout:   probeTimeout,
 		Transport: &http.Transport{Proxy: http.ProxyURL(proxy), DisableKeepAlives: true},
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, traceURL, nil)
-	if err != nil {
-		return "", err
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("trace: %w", err)
-	}
-	defer resp.Body.Close()
-	b, err := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
-	if err != nil {
-		return "", fmt.Errorf("trace: %w", err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("trace: %s", resp.Status)
-	}
-	return string(b), nil
+	return fetch(ctx, client, TraceURL)
 }
 
 // parseTrace reads the key=value lines of a /cdn-cgi/trace answer.

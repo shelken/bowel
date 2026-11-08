@@ -10,6 +10,7 @@ package main
 import (
 	"embed"
 	"fmt"
+	"maps"
 	"math"
 	"strings"
 	"sync"
@@ -267,6 +268,23 @@ func (p *pal) routeColor(id string) ui.Color {
 	return p.mute
 }
 
+// routePal is p with colors for a core's own routes. Their ids are the
+// core's group names, which the palette does not know; each takes the
+// color of the token it carries ("--r-media" is p.route["media"]).
+func (u *UI) routePal(p *pal) *pal {
+	if !u.snap.External {
+		return p
+	}
+	q := *p
+	q.route = maps.Clone(p.route)
+	for _, r := range u.snap.Routes {
+		if col, ok := p.route[strings.TrimPrefix(r.Color, "--r-")]; ok {
+			q.route[r.ID] = col
+		}
+	}
+	return &q
+}
+
 // sans is the face of all text, headlines included: OPPO Sans, bundled
 // (registerFonts), with the system's for what it lacks or when it did not
 // load.
@@ -279,7 +297,7 @@ var motion = ui.Animation{Duration: 520 * time.Millisecond, Ease: ui.CubicBezier
 
 func (u *UI) view(c *ui.Context) {
 	useLook(u.shownSettings())
-	p := windowPal(c, palette(c))
+	p := windowPal(c, u.routePal(palette(c)))
 	applyTheme(c, p, true)
 	// The caret in ink: the accent may be too pale for a line on paper.
 	c.Root().CaretColor(p.ink)
@@ -290,12 +308,17 @@ func (u *UI) view(c *ui.Context) {
 	c.OnShortcut(ui.Cmd, ui.KeyW, func() { u.win.Hide() })
 	c.OnShortcut(ui.Cmd, ui.Key1, func() { u.page = "home" })
 	c.OnShortcut(ui.Cmd, ui.Key2, func() { u.page = "activity" })
-	c.OnShortcut(ui.Cmd, ui.Key3, func() { u.page = "providers" })
+	if u.snap.External && u.page == "providers" {
+		u.page = "home" // its nodes are its own: no providers to manage
+	}
+	if !u.snap.External {
+		c.OnShortcut(ui.Cmd, ui.Key3, func() { u.page = "providers" })
+	}
 	c.OnShortcut(ui.Cmd, ui.KeyComma, u.openSettings)
 	// ⌘V outside a text field, on another page, with a link or node list on
 	// the clipboard: open Provider with it in the add bar. Provider's own
 	// page handles ⌘V itself.
-	if u.page != "providers" && !c.FocusTakesText() && c.Shortcut(ui.Cmd, ui.KeyV) {
+	if u.page != "providers" && !u.snap.External && !c.FocusTakesText() && c.Shortcut(ui.Cmd, ui.KeyV) {
 		if s := strings.TrimSpace(c.ReadClipboard()); strings.Contains(s, "://") || strings.Contains(s, "proxies:") {
 			u.page, u.prov.input, u.prov.focus = "providers", s, true
 		}
@@ -336,6 +359,9 @@ func (u *UI) titleBar(c *ui.Context, p *pal) {
 		ui.Row(c).Gap(2).Padding(3).Radius(p.r(10)).Background(p.hair2).Shrink(0).Children(func() {
 			for _, pg := range pages {
 				id := pg.id
+				if id == "providers" && u.snap.External {
+					continue
+				}
 				on := u.page == id
 				b := ui.ButtonBase(c.Key(id)).Padding(4, 16).Radius(p.r(7))
 				if on {

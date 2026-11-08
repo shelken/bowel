@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -22,6 +23,20 @@ type Client struct {
 	secret string
 	http   *http.Client
 	stream *http.Client // without a timeout, for streaming endpoints
+	// readOnly: the core is not ours; see ReadOnly.
+	readOnly bool
+}
+
+// ErrReadOnly is the answer to a request that would change a core that
+// is not ours.
+var ErrReadOnly = errors.New("mihomo: the core is not ours to change")
+
+// ReadOnly makes the client refuse every request that changes the core
+// except picking a node for a group (PUT /proxies/<group>), the one
+// thing a person at the interface of someone else's core is there to do.
+func (c *Client) ReadOnly() *Client {
+	c.readOnly = true
+	return c
 }
 
 // NewUnix returns a client of a controller listening on a unix socket
@@ -49,6 +64,9 @@ func newClient(base, secret string, t *http.Transport) *Client {
 }
 
 func (c *Client) do(ctx context.Context, method, path string, body, out any) error {
+	if c.readOnly && method != http.MethodGet && !(method == http.MethodPut && strings.HasPrefix(path, "/proxies/")) {
+		return ErrReadOnly
+	}
 	var r io.Reader
 	if body != nil {
 		b, err := json.Marshal(body)
@@ -123,6 +141,23 @@ func (c *Client) Patch(ctx context.Context, fields map[string]any) error {
 // Reload makes mihomo load the config file at path again.
 func (c *Client) Reload(ctx context.Context, path string) error {
 	return c.do(ctx, http.MethodPut, "/configs?force=true", map[string]string{"path": path}, nil)
+}
+
+// Rule is one entry of GET /rules. Proxy is its target: a group's name, or
+// in sing-box "route(<group>)" among its other actions.
+type Rule struct {
+	Type    string `json:"type"`
+	Payload string `json:"payload"`
+	Proxy   string `json:"proxy"`
+}
+
+// Rules is the core's rules, in the order they apply.
+func (c *Client) Rules(ctx context.Context) ([]Rule, error) {
+	var v struct {
+		Rules []Rule `json:"rules"`
+	}
+	err := c.do(ctx, http.MethodGet, "/rules", nil, &v)
+	return v.Rules, err
 }
 
 // Proxy is one entry of GET /proxies: a node or a group.

@@ -67,6 +67,28 @@ func TestParseDialFailure(t *testing.T) {
 			"[TCP] dial Proxy [fe80::1]:50000(uid=501) --> [2001:db8::1]:443 error: x",
 			dialFailure{Network: "tcp", Group: "Proxy", Source: "[fe80::1]:50000", Host: "2001:db8::1", Port: 443, Error: "x"},
 		},
+		// sing-box (route/conn.go) words a failed dial by what it opened and
+		// through which outbound; the id ties it to the lines of its connection.
+		{
+			"[3066431264 5.0s] connection: open connection to example.org:443 using outbound/shadowsocks[IEPL | 日本 | WAP]: dial tcp 192.0.2.1:443: i/o timeout",
+			dialFailure{ID: "3066431264", Network: "tcp", Group: "IEPL | 日本 | WAP", Host: "example.org", Port: 443, Error: "dial tcp 192.0.2.1:443: i/o timeout"},
+		},
+		{ // an address list, when the name was already resolved: no port
+			"[1 0ms] connection: open connection to [192.0.2.1,2001:db8::1] using outbound/direct[direct]: dial tcp: connection refused",
+			dialFailure{ID: "1", Network: "tcp", Group: "direct", Host: "192.0.2.1", Error: "dial tcp: connection refused"},
+		},
+		{ // tags may hold brackets; UDP
+			"[2 1.0s] connection: open packet connection to [2001:db8::1]:53 using outbound/hysteria2[[HK] node]: timeout",
+			dialFailure{ID: "2", Network: "udp", Group: "[HK] node", Host: "2001:db8::1", Port: 53, Error: "timeout"},
+		},
+		{ // no outbound named
+			"connection: open connection to 192.0.2.1:80: refused",
+			dialFailure{Network: "tcp", Host: "192.0.2.1", Port: 80, Error: "refused"},
+		},
+		{
+			"[3 2s] connection: listen packet connection using  using outbound/vless[node]: closed",
+			dialFailure{ID: "3", Network: "udp", Group: "node", Error: "closed"},
+		},
 	}
 	for _, c := range cases {
 		got, ok := parseDialFailure(c.line)
@@ -126,6 +148,36 @@ func TestFailuresFromLogs(t *testing.T) {
 	}
 	if got := m.Logs(12); len(got) != 0 {
 		t.Errorf("Logs(12): %+v", got)
+	}
+}
+
+// sing-box logs who asked and what was opened on separate lines of one
+// connection, all tied by an id; the failure itself says neither.
+func TestFailuresFromSingBoxLogs(t *testing.T) {
+	m := New("")
+	now := time.Now()
+	for _, l := range []mihomo.Log{
+		{Type: "info", Payload: "[111 0ms] inbound/tun[tun-in]: inbound connection from 198.51.100.1:59308"},
+		{Type: "info", Payload: "[111 0ms] router: found process path: /Applications/Foo.app/Contents/MacOS/Foo, user: me"},
+		{Type: "info", Payload: "[222 0ms] inbound/tun[tun-in]: inbound connection from 198.51.100.1:59309"},
+		{Type: "error", Payload: "[111 5.0s] connection: open connection to example.org:443 using outbound/shadowsocks[node a]: dial tcp 192.0.2.1:443: i/o timeout"},
+		{Type: "error", Payload: "[111 5.0s] connection: open connection to example.org:443 using outbound/shadowsocks[node a]: dial tcp 192.0.2.1:443: i/o timeout"},
+		{Type: "error", Payload: "[222 5.0s] connection: open packet connection to 192.0.2.9:53 using outbound/direct[direct]: refused"},
+	} {
+		m.addLog(l, now)
+		now = now.Add(time.Second)
+	}
+	conns := m.Conns()
+	if len(conns) != 2 {
+		t.Fatalf("got %d conns, want 2: %+v", len(conns), conns)
+	}
+	u, c := conns[0], conns[1]
+	if c.Status != "failed" || c.App != "Foo" || c.Process != "/Applications/Foo.app/Contents/MacOS/Foo" || c.Host != "example.org" ||
+		c.Port != 443 || c.Network != "tcp" || !slices.Equal(c.Chains, []string{"node a"}) || !strings.Contains(c.Error, "i/o timeout") {
+		t.Errorf("tcp failure: %+v", c)
+	}
+	if u.App != unknownApp() || u.IP != "192.0.2.9" || u.Network != "udp" || !slices.Equal(u.Chains, []string{"direct"}) {
+		t.Errorf("udp failure: %+v", u)
 	}
 }
 

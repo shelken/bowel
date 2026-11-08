@@ -113,6 +113,7 @@ type Monitor struct {
 	recentFail map[string]time.Time // dedupes mihomo's retries of one dial
 	failSeq    int64
 	paths      map[string]string // process name -> path, from polls
+	sbConns    map[string]sbConn // sing-box's connection id -> what its other lines said
 	ticks      []func()
 }
 
@@ -132,6 +133,7 @@ func New(statsPath string) *Monitor {
 		wake:       make(chan struct{}, 1),
 		recentFail: map[string]time.Time{},
 		paths:      map[string]string{},
+		sbConns:    map[string]sbConn{},
 	}
 	m.stats = loadStats(statsPath)
 	m.stats.roll(time.Now())

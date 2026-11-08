@@ -3,7 +3,12 @@
 // can serve every route (decision D1 of docs/product-ia.md).
 package routes
 
-import "github.com/oboo/moho/internal/i18n"
+import (
+	"slices"
+
+	"github.com/oboo/moho/internal/i18n"
+	"github.com/oboo/moho/internal/mihomo"
+)
 
 // Route is a kind of traffic and where it may go.
 type Route struct {
@@ -15,21 +20,92 @@ type Route struct {
 	Rules []string `json:"-"`
 	// Direct routes never use a node.
 	Direct bool `json:"direct"`
+	// Group is the core's group that serves the route; Auto its automatic
+	// (fastest + failover) group, "" when it has none. Direct routes have
+	// neither.
+	Group string `json:"-"`
+	Auto  string `json:"-"`
+	// Outs are the names an external core gives the Direct outbounds this
+	// route stands for.
+	Outs []string `json:"-"`
+}
+
+// Table is the routes in the order they are shown.
+type Table []Route
+
+// ByID is the route with that id, or the zero Route.
+func (t Table) ByID(id string) Route {
+	for _, r := range t {
+		if r.ID == id {
+			return r
+		}
+	}
+	return Route{}
+}
+
+// OfChain is the id of the route that a connection's last step (a group,
+// or DIRECT) belongs to, "" when none does. A connection that went direct
+// belongs to the direct route only when a rule sent it there.
+func (t Table) OfChain(group, rule string) string {
+	if group == "" {
+		return ""
+	}
+	for _, r := range t {
+		if !r.Direct && (group == r.Group || group == r.Auto) {
+			return r.ID
+		}
+	}
+	if rule != "" && rule != "Match" {
+		for _, r := range t {
+			if r.Direct && (group == "DIRECT" || slices.Contains(r.Outs, group)) {
+				return r.ID
+			}
+		}
+	}
+	return ""
+}
+
+// StepTitle is a chain's step as the interface shows it: a route's group by
+// the route's title, anything else (a node, DIRECT) as it is.
+func (t Table) StepTitle(name string) string {
+	if name == "" {
+		return name
+	}
+	for _, r := range t {
+		switch name {
+		case r.Group:
+			return Title(r)
+		case r.Auto:
+			return Title(r) + i18n.T("·自动", " · Auto")
+		}
+	}
+	return name
+}
+
+// Current is the node the route uses now, and whether its automatic group
+// chose it. A group may pick another group, so it follows the choices to
+// the node that carries the traffic; "" when the core has no such group.
+func (r Route) Current(px map[string]mihomo.Proxy) (node string, auto bool) {
+	g, ok := px[r.Group]
+	if !ok {
+		return "", false
+	}
+	node = g.Now
+	for len(px[node].All) > 0 {
+		node = px[node].Now
+	}
+	return node, r.Auto != "" && g.Now == r.Auto
 }
 
 // Default is the route that takes what no rule matched.
 const Default = "default"
 
-// Group is the name of a route's mihomo group; Auto that of its automatic
-// (fastest + failover) group.
-func Group(r Route) string { return r.Name }
-func Auto(r Route) string  { return r.Name + "·自动" }
-
 // Title is a route's name as the interface shows it. Name stays the
 // mihomo group's, in Chinese, so that configs and choices keep across a
-// change of language.
+// change of language. Only the template's own names have an English one;
+// a core's route keeps the name the core gave it.
 func Title(r Route) string {
-	if en, ok := titleEn[r.ID]; ok {
+	if en, ok := titleEn[r.Name]; ok {
 		return i18n.T(r.Name, en)
 	}
 	return r.Name
@@ -37,27 +113,30 @@ func Title(r Route) string {
 
 // Describe is a route's Summary as the interface shows it.
 func Describe(r Route) string {
-	if en, ok := summaryEn[r.ID]; ok {
+	if en, ok := summaryEn[r.Summary]; ok {
 		return i18n.T(r.Summary, en)
 	}
 	return r.Summary
 }
 
-var titleEn = map[string]string{Default: "Default", "ai": "AI", "media": "Streaming", "dev": "Dev", "direct": "Direct"}
+const defaultSummary = "没命中其他规则的流量"
+
+// titleEn and summaryEn are keyed by the Chinese text they translate.
+var titleEn = map[string]string{"默认": "Default", "AI 服务": "AI", "流媒体": "Streaming", "开发": "Dev", "直连": "Direct"}
 
 var summaryEn = map[string]string{
-	Default:  "Traffic no other rule matched",
-	"ai":     "OpenAI · Claude · Gemini · Perplexity and more",
-	"media":  "YouTube · Netflix · Spotify · Disney+ and more",
-	"dev":    "GitHub · npm · Docker · PyPI · Go and more",
-	"direct": "Mainland China sites · LAN",
+	defaultSummary: "Traffic no other rule matched",
+	"OpenAI · Claude · Gemini · Perplexity 等": "OpenAI · Claude · Gemini · Perplexity and more",
+	"YouTube · Netflix · Spotify · Disney+ 等": "YouTube · Netflix · Spotify · Disney+ and more",
+	"GitHub · npm · Docker · PyPI · Go 等":     "GitHub · npm · Docker · PyPI · Go and more",
+	"国内网站 · 局域网":                              "Mainland China sites · LAN",
 }
 
 // Template returns the routes in the order their rules apply; the default
 // route comes first for display, its rule (MATCH) last.
-func Template() []Route {
-	return []Route{
-		{ID: Default, Name: "默认", Color: "--r-default", Summary: "没命中其他规则的流量"},
+func Template() Table {
+	t := Table{
+		{ID: Default, Name: "默认", Color: "--r-default", Summary: defaultSummary},
 		{ID: "ai", Name: "AI 服务", Color: "--r-ai", Summary: "OpenAI · Claude · Gemini · Perplexity 等", Rules: suffixes(
 			"openai.com", "chatgpt.com", "oaistatic.com", "oaiusercontent.com", "sora.com",
 			"anthropic.com", "claude.ai", "claude.com", "claudeusercontent.com",
@@ -79,6 +158,12 @@ func Template() []Route {
 			"GEOSITE,private", "GEOSITE,cn", "GEOIP,private,no-resolve", "GEOIP,CN,no-resolve",
 		}},
 	}
+	for i, r := range t {
+		if !r.Direct {
+			t[i].Group, t[i].Auto = r.Name, r.Name+"·自动"
+		}
+	}
+	return t
 }
 
 func suffixes(domains ...string) []string {

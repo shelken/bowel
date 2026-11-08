@@ -54,6 +54,9 @@ type Manager struct {
 	OnStatus  func(Status)
 	OnTraffic func(mihomo.Traffic)
 
+	// PollEvery is how often an external manager checks its controller.
+	PollEvery time.Duration
+
 	mu       sync.Mutex
 	cmd      *exec.Cmd
 	exited   chan struct{}
@@ -67,6 +70,10 @@ type Manager struct {
 	socket, tcpAddr, secret string
 
 	logs logRing
+
+	// external: the core is someone else's (see NewExternal), so there
+	// is no process, config or home directory to manage.
+	external bool
 }
 
 // New prepares a manager; it starts nothing.
@@ -122,7 +129,11 @@ func (m *Manager) newClient() *mihomo.Client {
 	if m.socket != "" {
 		return mihomo.NewUnix(m.socket)
 	}
-	return mihomo.NewTCP(m.tcpAddr, m.secret)
+	c := mihomo.NewTCP(m.tcpAddr, m.secret)
+	if m.external {
+		c.ReadOnly()
+	}
+	return c
 }
 
 // SetBin changes the executable the next start uses (the setuid copy that
@@ -334,6 +345,10 @@ func (m *Manager) traffic(ctx context.Context, c *mihomo.Client) {
 
 // Stop ends the core and waits for it to exit.
 func (m *Manager) Stop() {
+	if m.external {
+		m.stopExternal()
+		return
+	}
 	m.mu.Lock()
 	cmd, exited, cancel := m.cmd, m.exited, m.cancel
 	m.stopping = true

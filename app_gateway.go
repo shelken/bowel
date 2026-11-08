@@ -52,6 +52,9 @@ func (a *App) gatewayOn(s settings.Settings) bool {
 // and takeover on too; the first time it asks for an administrator's
 // authorisation, once for TUN and the gateway together.
 func (a *App) setGateway(on bool) error {
+	if err := a.errExternal(); err != nil {
+		return err
+	}
 	done := a.begin("gateway")
 	defer done()
 	if on {

@@ -27,6 +27,10 @@ type Tool struct {
 	Description string
 	// Input is the JSON Schema of the arguments; nil takes none.
 	Input map[string]any
+	// Schema, if set, gives the schema each time the tools are listed, for
+	// arguments whose choices change while the server runs. Input is then
+	// not used.
+	Schema func() map[string]any
 	// ReadOnly tools change nothing; Destructive ones may undo what the
 	// user set up. Both are hints for the agent's own prompts.
 	ReadOnly    bool
@@ -34,6 +38,14 @@ type Tool struct {
 	// Run does the call. args is the arguments object ("{}" when none).
 	// An error is reported to the agent as the tool's failure, in words.
 	Run func(ctx context.Context, s *Session, args json.RawMessage) (any, error)
+}
+
+// InputSchema is the JSON Schema of the tool's arguments as of now.
+func (t Tool) InputSchema() map[string]any {
+	if t.Schema != nil {
+		return t.Schema()
+	}
+	return t.Input
 }
 
 // Server answers MCP requests with its tools.
@@ -262,7 +274,7 @@ func (srv *Server) handle(ctx context.Context, sess *Session, req request) (any,
 	case "tools/list":
 		tools := make([]map[string]any, 0, len(srv.Tools))
 		for _, t := range srv.Tools {
-			in := t.Input
+			in := t.InputSchema()
 			if in == nil {
 				in = map[string]any{"type": "object", "properties": map[string]any{}}
 			}

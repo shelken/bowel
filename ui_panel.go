@@ -71,7 +71,7 @@ func panelTheme(c *ui.Context, p *pal) { applyTheme(c, p, true) }
 func (u *UI) panelView(c *ui.Context) {
 	c.DisableAnimations() // switches and hovers land at once
 	useLook(u.shownSettings())
-	p := palette(c)
+	p := u.routePal(palette(c))
 	panelTheme(c, p)
 	c.OnShortcut(ui.Cmd, ui.KeyO, func() { u.panelShow(nil) })
 	c.OnShortcut(ui.Cmd, ui.KeyQ, mygo.App.Quit)
@@ -84,8 +84,10 @@ func (u *UI) panelView(c *ui.Context) {
 		panelRule(c, p)
 		u.panelNodes(c, p)
 		panelRule(c, p)
-		u.panelMode(c, p)
-		panelRule(c, p)
+		if !u.snap.External { // its mode is its own
+			u.panelMode(c, p)
+			panelRule(c, p)
+		}
 		panelCmd(c, p, "open", i18n.T("打开 bowel", "Open bowel"), "⌘O").OnClick(func() { u.panelShow(nil) })
 		panelCmd(c, p, "quit", i18n.T("退出 bowel", "Quit bowel"), "⌘Q").OnClick(mygo.App.Quit)
 	})
@@ -105,11 +107,14 @@ func (u *UI) panelHead(c *ui.Context, p *pal) {
 		// the word shimmers.
 		starting := u.pending("takeover") || (s.Takeover.On && s.Core.State == "starting")
 		shimmer(disp(ui.Text(c, word), p).FontSize(21).FontWeight(700).LetterSpacing(-.3).TextColor(p.ink), starting, p)
-		if s.Takeover.On && s.Mode != "rule" {
+		if s.Takeover.On && s.Mode != "rule" && !s.External {
 			ui.Text(c, "· "+panelModeName(s.Mode)).FontSize(12).FontWeight(500).TextColor(p.mute)
 		}
 		ui.Spacer(c)
 		on := s.Takeover.On
+		if s.External { // there is nothing for bowel to take over
+			return
+		}
 		if ui.Switch(c.Key("takeover"), &on).Label(i18n.T("接管", "Takeover")).Disabled(u.pending("takeover")).Changed() {
 			u.do(func() error { return u.app.setTakeover(on) })
 		}
@@ -195,6 +200,8 @@ func (u *UI) panelNodes(c *ui.Context, p *pal) {
 			note = i18n.T("流量不经过 bowel", "Traffic isn’t going through bowel")
 		case s.Mode == "direct":
 			note = i18n.T("直连模式：不经过任何节点", "Direct mode: no node is used")
+		case len(s.Nodes) == 0 && s.External:
+			note = i18n.T("这个内核里还没有节点。", "The core has no nodes yet.")
 		case len(s.Nodes) == 0:
 			note = i18n.T("还没有节点 · 在 bowel 里添加提供商", "No nodes yet · Add a provider in bowel")
 		case r.ID == "" || r.Direct:
@@ -214,22 +221,25 @@ func (u *UI) panelNodeList(c *ui.Context, p *pal, r RouteView) {
 			u.do(func() error { return u.app.selectNode(r.ID, node) })
 		}
 	}
-	panelNodeRow(c, p, "auto", r.Auto, func() {
-		ui.Text(c, i18n.T("自动", "Auto")).FontSize(12.5).FontWeight(600).TextColor(p.ink)
-		ui.Text(c, i18n.T("最快 + 故障转移", "Fastest + failover")).FontSize(11).TextColor(p.mute).Grow(1)
-	}).OnClick(func() {
-		if !r.Auto {
-			choose("")
-		}
-	})
-	nodes := append([]NodeView(nil), u.snap.Nodes...)
+	if !u.snap.External {
+		panelNodeRow(c, p, "auto", r.Auto, func() {
+			ui.Text(c, i18n.T("自动", "Auto")).FontSize(12.5).FontWeight(600).TextColor(p.ink)
+			ui.Text(c, i18n.T("最快 + 故障转移", "Fastest + failover")).FontSize(11).TextColor(p.mute).Grow(1)
+		}).OnClick(func() {
+			if !r.Auto {
+				choose("")
+			}
+		})
+	}
+	pickable := u.pickable(r)
+	nodes := append([]NodeView(nil), pickable...)
 	sort.SliceStable(nodes, func(i, j int) bool { return rankOf(nodes[i]) < rankOf(nodes[j]) })
 	if len(nodes) > panelNodes {
 		nodes = nodes[:panelNodes]
 	}
 	for _, n := range nodes {
 		name := n.Name
-		chosen := !r.Auto && r.Node == name
+		chosen := !r.Auto && u.picked(r, n)
 		panelNodeRow(c, p, name, chosen, func() {
 			flagged(c, p, n, 12.5, func() {
 				ui.Text(c, n.Display).FontSize(12.5).TextColor(p.ink).MaxLines(1).Grow(1).Basis(0)
@@ -246,7 +256,7 @@ func (u *UI) panelNodeList(c *ui.Context, p *pal, r RouteView) {
 	}
 	panelNodeRow(c, p, "all", false, func() {
 		ui.Text(c, i18n.T("全部节点…", "All nodes…")).FontSize(12.5).TextColor(p.ink2).Grow(1)
-		ui.Text(c, fmt.Sprintf(i18n.T("%d 个", "%d"), len(u.snap.Nodes))).FontSize(11.5).FontFeatures("tnum").TextColor(p.mute)
+		ui.Text(c, fmt.Sprintf(i18n.T("%d 个", "%d"), len(pickable))).FontSize(11.5).FontFeatures("tnum").TextColor(p.mute)
 	}).OnClick(func() {
 		u.panelShow(func() {
 			u.page = "home"

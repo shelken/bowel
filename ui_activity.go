@@ -500,32 +500,34 @@ func (u *UI) actQueryBar(c *ui.Context, p *pal) {
 				ui.Text(c, "app: route: node: host:").Font(actMono).FontSize(11).TextColor(p.mute).NoWrap()
 			})
 			u.actLive(c, p)
-			label := i18n.T("断开筛选结果", "Close filtered")
-			if armed {
-				label = fmt.Sprintf(i18n.T("确认断开 %d 个？", "Close %d? Click again"), len(live))
-			}
-			b := ui.ButtonBase(c.Key("closeall")).Padding(5, 11).Radius(p.r(7)).Disabled(len(live) == 0 && !armed)
-			col := p.signal
-			switch {
-			case armed:
-				b.Background(p.signal)
-				col = ui.Hex("#ffffff")
-			case len(live) == 0:
-				b.Border(1, p.hair)
-				col = p.faint
-			case b.Hovered():
-				b.Border(1, p.signal)
-			default:
-				b.Border(1, p.hair)
-			}
-			b.OnClick(func() {
+			if !u.snap.External { // its connections are read, not closed
+				label := i18n.T("断开筛选结果", "Close filtered")
 				if armed {
-					a.armedAt = time.Time{}
-					a.close(u, live)
-					return
+					label = fmt.Sprintf(i18n.T("确认断开 %d 个？", "Close %d? Click again"), len(live))
 				}
-				a.armedAt, a.armedSig = c.Now(), a.sig()
-			}).Children(func() { ui.Text(c, label).FontSize(12).FontWeight(500).TextColor(col).NoWrap() })
+				b := ui.ButtonBase(c.Key("closeall")).Padding(5, 11).Radius(p.r(7)).Disabled(len(live) == 0 && !armed)
+				col := p.signal
+				switch {
+				case armed:
+					b.Background(p.signal)
+					col = ui.Hex("#ffffff")
+				case len(live) == 0:
+					b.Border(1, p.hair)
+					col = p.faint
+				case b.Hovered():
+					b.Border(1, p.signal)
+				default:
+					b.Border(1, p.hair)
+				}
+				b.OnClick(func() {
+					if armed {
+						a.armedAt = time.Time{}
+						a.close(u, live)
+						return
+					}
+					a.armedAt, a.armedSig = c.Now(), a.sig()
+				}).Children(func() { ui.Text(c, label).FontSize(12).FontWeight(500).TextColor(col).NoWrap() })
+			}
 		})
 		ui.Row(c).Gap(16).Padding(2, 0, 10, 0).AlignItems(ui.Center).Children(func() {
 			actSeg(c.Key("status"), p, &a.status, []string{
@@ -763,7 +765,7 @@ func (u *UI) actRow(c *ui.Context, p *pal, i int, cn Conn) {
 				num(9, actFmtDur(actDuration(cn, time.Now())), ink2)
 			}
 			actCell(ui.Row(c).Justify(ui.Center), 10).Children(func() {
-				if cn.Status != "active" {
+				if cn.Status != "active" || u.snap.External {
 					return
 				}
 				x := ui.ButtonBase(c.Key("x")).Size(26, 26).Margin(-6, -4, -6, -4).Radius(p.r(6)).Justify(ui.Center).AlignItems(ui.Center).
@@ -856,7 +858,7 @@ func (u *UI) actDetail(c *ui.Context, p *pal, cn Conn) {
 				}
 			})
 			ui.Column(c).Gap(6).MinWidth(96).Shrink(0).Children(func() {
-				if cn.Status == "active" {
+				if cn.Status == "active" && !u.snap.External {
 					b := ui.ButtonBase(c.Key("kill")).Padding(5, 11).Radius(p.r(7)).Border(1, p.hair).OnClick(func() { a.close(u, []string{cn.ID}) })
 					if b.Hovered() {
 						b.BorderColor(p.signal)
@@ -867,7 +869,9 @@ func (u *UI) actDetail(c *ui.Context, p *pal, cn Conn) {
 				if host == "" {
 					host = cn.IP
 				}
-				u.actRouteBtn(c, p, cn)
+				if !u.snap.External { // nor does it take our rules
+					u.actRouteBtn(c, p, cn)
+				}
 				btn(c.Key("copy"), p, i18n.T("复制域名", "Copy domain")).OnClick(func() {
 					c.WriteClipboard(host)
 					u.toasts = append(u.toasts, i18n.T("已复制 ", "Copied ")+host)

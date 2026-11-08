@@ -49,16 +49,21 @@ type App struct {
 	dataDir   string
 	settings  *settings.Store
 	providers *provider.Store
-	routes    []routes.Route
+	routes    routes.Table // under mu: an external core's are found by refresh
 	core      *core.Manager
 	mon       *monitor.Monitor
 	loc       *locate.Locator
+	// traceURL is the page an external core's exits are read from; empty
+	// turns that off. observeAt is when each node was last tried.
+	traceURL  string
+	observeAt map[string]time.Time
 	http      *http.Client
 	coreBin   string // the bundled core
 	tunBin    string // the setuid copy TUN runs
 	probePort int
 	gw        *gateway.Gateway
 
+	boot  coreChoice // the core this run drives, as chosen when it started
 	setMu sync.Mutex // serialises updateSettings
 	// openAtLogin is whether Moho is a login item, as last read.
 	openAtLogin bool
@@ -68,6 +73,7 @@ type App struct {
 	sys         sysproxy.Status
 	proxies     map[string]mihomo.Proxy
 	provNodes   map[string][]string // provider id → node names, in the provider's order
+	extNodes    []string            // an external core's nodes, which no provider supplies
 	// nodesSig is the names /proxies had when provNodes was read, at
 	// nodesAt: the providers' lists are read again when they change.
 	nodesSig   uint64
@@ -121,8 +127,11 @@ func newApp() (*App, error) {
 	if tun.Installed(tunBin) {
 		run = tunBin
 	}
-	cm, err := core.New(run, filepath.Join(data, "core"))
-	if err != nil {
+	s := st.Get()
+	var cm *core.Manager
+	if s.CoreSource == "external" {
+		cm = core.NewExternal(s.CoreAddr, s.CoreSecret)
+	} else if cm, err = core.New(run, filepath.Join(data, "core")); err != nil {
 		return nil, err
 	}
 	probe, err := core.FreePort()
@@ -131,12 +140,17 @@ func newApp() (*App, error) {
 	}
 	a := &App{
 		dataDir: data, settings: st, providers: ps, routes: routes.Template(), core: cm,
-		mon:  monitor.New(filepath.Join(data, "stats.json")),
-		loc:  locate.New(filepath.Join(data, "locations.json")),
+		mon:      monitor.New(filepath.Join(data, "stats.json")),
+		loc:      locate.New(filepath.Join(data, "locations.json")),
+		traceURL: locate.TraceURL, observeAt: map[string]time.Time{},
 		http: &http.Client{Transport: netproxy.Transport()}, coreBin: bin, tunBin: tunBin, probePort: probe,
 		pending: map[string]bool{}, locating: map[string]bool{}, proxies: map[string]mihomo.Proxy{},
 		provNodes: map[string][]string{}, lastNode: map[string]string{}, routeBytes: map[string]int64{},
 		gw: gateway.New(osGateway(), filepath.Join(data, "gateway-before.json")),
+	}
+	a.boot = coreChoiceOf(s)
+	if cm.External() {
+		a.routes = nil
 	}
 	cm.SafePaths = []string{filepath.Join(data, "providers")}
 	a.mon.SkipGroup = core.ProbeGroup // the location probe's own traffic
@@ -145,6 +159,20 @@ func newApp() (*App, error) {
 	cm.OnStatus = func(s core.Status) { a.onCoreStatus(s) }
 	a.mon.OnTick(a.onTick)
 	return a, nil
+}
+
+// coreChoice is which core bowel drives and where to reach it; it is read
+// when bowel starts.
+type coreChoice struct {
+	external     bool
+	addr, secret string
+}
+
+func coreChoiceOf(s settings.Settings) coreChoice {
+	if s.CoreSource != "external" {
+		return coreChoice{}
+	}
+	return coreChoice{true, s.CoreAddr, s.CoreSecret}
 }
 
 // bundledCore finds mihomo: $MOHO_CORE, else bin/mihomo among the resources.
@@ -202,15 +230,27 @@ func (a *App) start() {
 	a.openAtLogin = mygo.App.OpenAtLogin()
 	a.openWindow()
 	a.setupTray()
-	a.copyGeo()
+	if !a.core.External() {
+		a.copyGeo()
+	}
 	go func() {
-		if err := a.applyConfig(); err != nil {
+		if err := a.startCore(); err != nil {
 			log.Println("core:", err)
 		}
 	}()
 	go a.loop()
 	go a.debugDriver()
 	a.startMCP()
+}
+
+// startCore brings the core up: it starts the built-in one with the
+// current config, or attaches to the external one, whose config is not
+// ours to write.
+func (a *App) startCore() error {
+	if a.core.External() {
+		return a.core.Connect()
+	}
+	return a.applyConfig()
 }
 
 func (a *App) openWindow() {
@@ -308,14 +348,16 @@ func (a *App) shutdown() {
 	}
 	// Never leave the system pointing at a proxy that is gone: put back
 	// what it had before Moho took it over.
-	port := a.settings.Get().MixedPort
-	if s, err := sysproxy.Check(port); err == nil {
-		if s.Ours {
-			if err := a.disableProxy(port); err != nil {
-				log.Println("system proxy:", err)
+	// An external core owns the port and the proxy that points there.
+	if port := a.settings.Get().MixedPort; !a.core.External() {
+		if s, err := sysproxy.Check(port); err == nil {
+			if s.Ours {
+				if err := a.disableProxy(port); err != nil {
+					log.Println("system proxy:", err)
+				}
+			} else {
+				a.dropProxyBackup() // another program has the proxy now
 			}
-		} else {
-			a.dropProxyBackup() // another program has the proxy now
 		}
 	}
 	a.core.Stop()
@@ -357,6 +399,7 @@ func (a *App) loop() {
 		select {
 		case <-fast.C:
 			a.refresh()
+			go a.observeExit() // a node that came up since: URLTest moves by itself
 		case <-slow.C:
 			a.autoUpdate()
 			a.locateExits(false)
@@ -378,13 +421,22 @@ func (a *App) refresh() {
 	if c, err := a.core.Client(); err == nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		px, err := c.Proxies(ctx)
+		ext := a.core.External()
+		var table routes.Table
+		var leaves []string
+		if ext && err == nil {
+			var rs []mihomo.Rule
+			if rs, err = c.Rules(ctx); err == nil {
+				table, leaves = routes.Discover(px, rs), routes.Nodes(px)
+			}
+		}
 		// The providers' lists hold the same nodes again, in their order:
 		// read them only when the names change, or a minute on.
 		sig := nodeSig(px)
 		a.mu.Lock()
 		nodes, stale := a.provNodes, sig != a.nodesSig || time.Since(a.nodesAt) > time.Minute
 		a.mu.Unlock()
-		if err == nil && stale {
+		if err == nil && stale && !ext {
 			var pp map[string]mihomo.ProxyProvider
 			if pp, err = c.ProxyProviders(ctx); err == nil {
 				nodes = map[string][]string{}
@@ -403,6 +455,9 @@ func (a *App) refresh() {
 		if err == nil {
 			a.mu.Lock()
 			a.proxies, a.provNodes = px, nodes
+			if ext {
+				a.routes, a.extNodes = table, leaves
+			}
 			if stale {
 				a.nodesSig, a.nodesAt = sig, time.Now()
 			}
@@ -439,10 +494,17 @@ func (a *App) onCoreStatus(s core.Status) {
 
 // ---- Config ----
 
-func (a *App) takeoverOn(s settings.Settings) bool { return !s.Paused && (s.SystemProxy || s.Tun) }
+// An external core is not ours to point the system at: it takes over
+// by itself (a sing-box with a TUN inbound, say).
+func (a *App) takeoverOn(s settings.Settings) bool {
+	return !a.core.External() && !s.Paused && (s.SystemProxy || s.Tun)
+}
 
 // applyConfig rebuilds the runtime config and makes the core use it.
 func (a *App) applyConfig() error {
+	if err := a.errExternal(); err != nil {
+		return err
+	}
 	s := a.settings.Get()
 	var refs []core.ProviderRef
 	for _, p := range a.providers.List() {
@@ -451,7 +513,7 @@ func (a *App) applyConfig() error {
 		}
 	}
 	cfg, err := core.BuildConfig(core.Input{
-		Providers: refs, Routes: a.routes, UserRules: s.Rules, Mode: s.Mode, MixedPort: s.MixedPort, AllowLan: s.AllowLan,
+		Providers: refs, Routes: a.routeTable(), UserRules: s.Rules, Mode: s.Mode, MixedPort: s.MixedPort, AllowLan: s.AllowLan,
 		Tun:      s.Tun && a.takeoverOn(s) && tun.Installed(a.tunBin),
 		Gateway:  a.gatewayOn(s),
 		LogLevel: s.LogLevel, TestURL: s.TestURL, ProbePort: a.probePort, Controller: a.core.ControllerFields(),
@@ -480,7 +542,7 @@ func (a *App) pointGlobal() {
 	if c, err := a.core.Client(); err == nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
-		_ = c.Select(ctx, "GLOBAL", routes.Group(a.route(routes.Default)))
+		_ = c.Select(ctx, "GLOBAL", a.route(routes.Default).Group)
 	}
 }
 
@@ -496,6 +558,9 @@ var osProxy = struct {
 // applySystemProxy makes the OS match the settings. prev are mixed ports
 // the system may still point at, as after the port changed.
 func (a *App) applySystemProxy(prev ...int) {
+	if a.core.External() {
+		return // it takes over by itself, if at all
+	}
 	s := a.settings.Get()
 	want := a.takeoverOn(s) && s.SystemProxy
 	cur, err := sysproxy.Check(s.MixedPort)
@@ -596,7 +661,19 @@ func (a *App) busy(key string) bool {
 
 // ---- Actions ----
 
+// errExternal is what an action that would change the core says when the
+// core is someone else's.
+func (a *App) errExternal() error {
+	if !a.core.External() {
+		return nil
+	}
+	return errors.New(i18n.T("外部内核由它自己管理，bowel 只读取它，并能切换节点", "The external core manages itself; bowel only reads it and can switch its nodes"))
+}
+
 func (a *App) setTakeover(on bool) error {
+	if err := a.errExternal(); err != nil {
+		return err
+	}
 	done := a.begin("takeover")
 	defer done()
 	_, err := a.settings.Update(func(s *settings.Settings) {
@@ -612,6 +689,9 @@ func (a *App) setTakeover(on bool) error {
 }
 
 func (a *App) setSystemProxy(on bool) error {
+	if err := a.errExternal(); err != nil {
+		return err
+	}
 	done := a.begin("entry:sys")
 	defer done()
 	if _, err := a.settings.Update(func(s *settings.Settings) {
@@ -626,6 +706,9 @@ func (a *App) setSystemProxy(on bool) error {
 }
 
 func (a *App) setTun(on bool) error {
+	if err := a.errExternal(); err != nil {
+		return err
+	}
 	done := a.begin("entry:tun")
 	defer done()
 	if on && !tun.Installed(a.tunBin) {
@@ -655,6 +738,9 @@ func (a *App) afterTakeover() error {
 }
 
 func (a *App) setLan(on bool) error {
+	if err := a.errExternal(); err != nil {
+		return err
+	}
 	done := a.begin("lan")
 	defer done()
 	if _, err := a.settings.Update(func(s *settings.Settings) { s.AllowLan = on }); err != nil {
@@ -664,6 +750,9 @@ func (a *App) setLan(on bool) error {
 }
 
 func (a *App) setMode(mode string) error {
+	if err := a.errExternal(); err != nil {
+		return err
+	}
 	switch mode {
 	case "rule", "global", "direct":
 	default:
@@ -736,8 +825,10 @@ func migrateData(dir string) {
 
 // appOnly says whether next differs from old only in what the core does
 // not see: the language, starting hidden, the theme color, the appearance,
-// the skin and the board's borders.
+// the skin and the board's borders, and which core to drive, which is read
+// at the next start.
 func appOnly(old, next settings.Settings) bool {
+	next.CoreSource, next.CoreAddr, next.CoreSecret = old.CoreSource, old.CoreAddr, old.CoreSecret
 	next.Language, next.StartHidden, next.Accent, next.Appearance = old.Language, old.StartHidden, old.Accent, old.Appearance
 	next.Skin, next.Borders = old.Skin, old.Borders
 	next.MCPPolicy = old.MCPPolicy // the MCP server's, not the core's
@@ -754,6 +845,11 @@ func (a *App) updateSettings(fn func(*settings.Settings)) error {
 	fn(&next)
 	if err := next.Validate(); err != nil {
 		return err
+	}
+	if !appOnly(old, next) {
+		if err := a.errExternal(); err != nil {
+			return err
+		}
 	}
 	// A port the core does not listen on yet must be free.
 	for _, p := range [][2]int{{old.MixedPort, next.MixedPort}, {old.HTTPPort, next.HTTPPort},
@@ -868,14 +964,14 @@ func (a *App) revealConfig() error {
 	return exec.Command("open", "-R", a.core.ConfigPath()).Run()
 }
 
-func (a *App) route(id string) routes.Route {
-	for _, r := range a.routes {
-		if r.ID == id {
-			return r
-		}
-	}
-	return routes.Route{}
+// routeTable is the routes now; not with a.mu held.
+func (a *App) routeTable() routes.Table {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.routes
 }
+
+func (a *App) route(id string) routes.Route { return a.routeTable().ByID(id) }
 
 func (a *App) selectNode(routeID, node string) error {
 	r := a.route(routeID)
@@ -890,11 +986,11 @@ func (a *App) selectNode(routeID, node string) error {
 	defer done()
 	target := node
 	if node == "" {
-		target = routes.Auto(r)
+		target = r.Auto
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := c.Select(ctx, routes.Group(r), target); err != nil {
+	if err := c.Select(ctx, r.Group, target); err != nil {
 		return err
 	}
 	a.refresh()
@@ -914,7 +1010,7 @@ func (a *App) testRoute(ctx context.Context, routeID string) error {
 	defer done()
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
-	_, err = c.GroupDelay(ctx, routes.Group(r), a.settings.Get().TestURL, 5*time.Second)
+	_, err = c.GroupDelay(ctx, r.Group, a.settings.Get().TestURL, 5*time.Second)
 	a.refresh()
 	return err
 }
@@ -924,15 +1020,26 @@ func (a *App) locate(ctx context.Context, node string) error {
 	return err
 }
 
-// probe measures a node's exit in the background, showing "locating".
+// probe measures a node's exit in the background, showing "locating". A
+// node that cannot be measured keeps the place its name gives; the log
+// says why. An external core has no probe to run.
 func (a *App) probe(node string) {
-	if r := a.loc.Guess(node, display(node)); r.Source == "probe" {
+	if a.core.External() {
 		return
 	}
-	_, _ = a.probeErr(context.Background(), node)
+	if a.loc.Fresh(node) {
+		return
+	}
+	if _, err := a.probeErr(context.Background(), node); err != nil {
+		log.Println("locate:", err)
+	}
 }
 
 func (a *App) probeErr(ctx context.Context, node string) (locate.Result, error) {
+	// The probe is a listener that bowel adds to the core's config.
+	if a.core.External() {
+		return locate.Result{}, errors.New(i18n.T("外部内核无法实测出口位置", "An external core cannot measure exit locations"))
+	}
 	c, err := a.core.Client()
 	if err != nil {
 		return locate.Result{}, err
@@ -952,8 +1059,64 @@ func (a *App) probeErr(ctx context.Context, node string) (locate.Result, error) 
 	return r, err
 }
 
+// observeCooldown is how long a node that could not be measured is left
+// alone: the loop asks every 2 s. A core that bowel's request does not
+// enter (no TUN, no system proxy) fails every time, so the wait is long.
+const observeCooldown = time.Hour
+
+// observeExit measures where the node that carries the default route exits,
+// unless a recent measurement says. An external core has no probe group to
+// point at a node, so bowel measures what it can see: its own request, and
+// the node the core sent it through.
+func (a *App) observeExit() {
+	if !a.core.External() {
+		return
+	}
+	a.mu.Lock()
+	target, px := a.traceURL, a.proxies
+	a.mu.Unlock()
+	if target == "" {
+		return
+	}
+	node := ""
+	for _, r := range a.routeTable() {
+		if r.ID == "default" {
+			node, _ = r.Current(px)
+		}
+	}
+	if node == "" || a.loc.Fresh(node) {
+		return
+	}
+	a.mu.Lock()
+	if time.Since(a.observeAt[node]) < observeCooldown {
+		a.mu.Unlock()
+		return
+	}
+	a.observeAt[node] = time.Now()
+	a.locating[node] = true
+	a.mu.Unlock()
+	a.emit()
+	err := errors.New("core is not running")
+	if c, cerr := a.core.Client(); cerr == nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		_, _, err = a.loc.Observe(ctx, c, target)
+		cancel()
+	}
+	a.mu.Lock()
+	delete(a.locating, node)
+	a.mu.Unlock()
+	a.emit()
+	if err != nil {
+		log.Println("locate:", err)
+	}
+}
+
 // locateExits measures the user's own place and the nodes routes use now.
 func (a *App) locateExits(force bool) {
+	if a.core.External() {
+		a.observeExit()
+		return
+	}
 	if force || a.you == nil {
 		_, _ = a.probeErr(context.Background(), "DIRECT")
 	}
@@ -961,11 +1124,11 @@ func (a *App) locateExits(force bool) {
 	px := a.proxies
 	a.mu.Unlock()
 	seen := map[string]bool{}
-	for _, r := range a.routes {
+	for _, r := range a.routeTable() {
 		if r.Direct {
 			continue
 		}
-		if n := currentNode(px, r); n != "" && !seen[n] {
+		if n, _ := r.Current(px); n != "" && !seen[n] {
 			seen[n] = true
 			if force {
 				_, _ = a.probeErr(context.Background(), n)
@@ -976,18 +1139,6 @@ func (a *App) locateExits(force bool) {
 	}
 }
 
-// currentNode is the node a route uses now, following its automatic group.
-func currentNode(px map[string]mihomo.Proxy, r routes.Route) string {
-	g, ok := px[routes.Group(r)]
-	if !ok {
-		return ""
-	}
-	if g.Now == routes.Auto(r) {
-		return px[routes.Auto(r)].Now
-	}
-	return g.Now
-}
-
 // noticeSwitches records a route's automatic group moving off a failed node.
 func (a *App) noticeSwitches() {
 	a.mu.Lock()
@@ -996,10 +1147,10 @@ func (a *App) noticeSwitches() {
 		if r.Direct {
 			continue
 		}
-		n := currentNode(a.proxies, r)
+		n, auto := r.Current(a.proxies)
 		prev := a.lastNode[r.ID]
 		a.lastNode[r.ID] = n
-		if prev == "" || prev == n || a.proxies[routes.Group(r)].Now != routes.Auto(r) {
+		if prev == "" || prev == n || !auto {
 			continue
 		}
 		if p, ok := a.proxies[prev]; ok && len(p.History) > 0 && p.History[len(p.History)-1].Delay == 0 {
@@ -1016,6 +1167,9 @@ func (a *App) detectProvider(input string) (string, error) {
 }
 
 func (a *App) addProvider(ctx context.Context, input string) (ProviderView, error) {
+	if err := a.errExternal(); err != nil {
+		return ProviderView{}, err
+	}
 	done := a.begin("add")
 	defer done()
 	p, err := a.providers.Add(ctx, a.http, input)
@@ -1026,6 +1180,9 @@ func (a *App) addProvider(ctx context.Context, input string) (ProviderView, erro
 }
 
 func (a *App) addProviderFile(ctx context.Context) (*ProviderView, error) {
+	if err := a.errExternal(); err != nil {
+		return nil, err
+	}
 	paths, err := mygo.Dialog.Open(mygo.OpenDialogOptions{
 		Parent: mygo.CallerWindow(ctx), Title: i18n.T("添加 Provider", "Add Provider"),
 		Filters: []mygo.FileFilter{{Name: i18n.T("Clash 配置或节点列表", "Clash config or node list"), Extensions: []string{"yaml", "yml", "txt", "conf"}}},
@@ -1065,6 +1222,9 @@ func (a *App) healthCheck(id string) {
 }
 
 func (a *App) updateProvider(ctx context.Context, id string) error {
+	if err := a.errExternal(); err != nil {
+		return err
+	}
 	done := a.begin("provider:" + id)
 	defer done()
 	if _, err := a.providers.Update(ctx, a.http, id); err != nil {
@@ -1077,6 +1237,9 @@ func (a *App) updateProvider(ctx context.Context, id string) error {
 }
 
 func (a *App) updateAll(ctx context.Context) error {
+	if err := a.errExternal(); err != nil {
+		return err
+	}
 	done := a.begin("providers")
 	defer done()
 	var errs []error
@@ -1094,6 +1257,9 @@ func (a *App) updateAll(ctx context.Context) error {
 }
 
 func (a *App) autoUpdate() {
+	if a.core.External() {
+		return
+	}
 	ids := a.providers.Due(time.Now())
 	for _, id := range ids {
 		if _, err := a.providers.Update(context.Background(), a.http, id); err != nil {
@@ -1106,6 +1272,9 @@ func (a *App) autoUpdate() {
 }
 
 func (a *App) setProviderEnabled(id string, on bool) error {
+	if err := a.errExternal(); err != nil {
+		return err
+	}
 	done := a.begin("provider:" + id)
 	defer done()
 	if _, err := a.providers.SetEnabled(id, on); err != nil {
@@ -1127,6 +1296,9 @@ func (a *App) setAutoUpdate(id string, hours int) error {
 }
 
 func (a *App) deleteProvider(id string) error {
+	if err := a.errExternal(); err != nil {
+		return err
+	}
 	done := a.begin("provider:" + id)
 	defer done()
 	if err := a.providers.Delete(id); err != nil {
@@ -1186,7 +1358,7 @@ func (a *App) reroute(r routes.UserRule, keep string) int {
 		if len(cn.Chains) > 0 {
 			group = cn.Chains[len(cn.Chains)-1]
 		}
-		if keep == "" || a.routeOfGroup(group, cn.Rule) != keep {
+		if keep == "" || a.routeTable().OfChain(group, cn.Rule) != keep {
 			ids = append(ids, cn.ID)
 		}
 	}
@@ -1198,23 +1370,6 @@ func (a *App) reroute(r routes.UserRule, keep string) int {
 }
 
 // ---- Activity ----
-
-// routeOfGroup maps a mihomo group name (or DIRECT) to a route id.
-func (a *App) routeOfGroup(group, rule string) string {
-	for _, r := range a.routes {
-		if !r.Direct && (group == routes.Group(r) || group == routes.Auto(r)) {
-			return r.ID
-		}
-	}
-	if group == "DIRECT" && rule != "" && rule != "Match" {
-		for _, r := range a.routes {
-			if r.Direct {
-				return r.ID
-			}
-		}
-	}
-	return ""
-}
 
 // display is a node's name without Moho's provider marker.
 func display(node string) string {
@@ -1267,20 +1422,6 @@ func providerOf(node string) string {
 	return ""
 }
 
-// groupTitle is a chain's step as the interface shows it: a route's group
-// by the route's title, anything else (a node, DIRECT) as it is.
-func (a *App) groupTitle(name string) string {
-	for _, r := range a.routes {
-		switch name {
-		case routes.Group(r):
-			return routes.Title(r)
-		case routes.Auto(r):
-			return routes.Title(r) + i18n.T("·自动", " · Auto")
-		}
-	}
-	return name
-}
-
 func (a *App) convConn(c monitor.Conn) Conn {
 	group := ""
 	if len(c.Chains) > 0 {
@@ -1288,12 +1429,12 @@ func (a *App) convConn(c monitor.Conn) Conn {
 	}
 	v := Conn{
 		ID: c.ID, App: c.App, Process: c.Process, Host: c.Host, IP: c.IP, Port: c.Port, Network: c.Network,
-		Rule: c.Rule, Payload: c.Payload, Route: a.routeOfGroup(group, c.Rule),
+		Rule: c.Rule, Payload: c.Payload, Route: a.routeTable().OfChain(group, c.Rule),
 		Down: c.Down, Up: c.Up, DownRate: c.DownRate, UpRate: c.UpRate, Start: c.Start, End: c.End,
 		Status: c.Status, Error: c.Error,
 	}
 	for i := len(c.Chains) - 1; i >= 0; i-- {
-		v.Chain = append(v.Chain, a.groupTitle(a.display(c.Chains[i])))
+		v.Chain = append(v.Chain, a.routeTable().StepTitle(a.display(c.Chains[i])))
 	}
 	if len(c.Chains) > 1 || (len(c.Chains) == 1 && c.Chains[0] != "DIRECT" && group != c.Chains[0]) {
 		v.Node = a.display(c.Chains[0])
@@ -1360,7 +1501,7 @@ func (a *App) buildTick() Tick {
 		TodayDown: n.TodayDown, TodayUp: n.TodayUp, MonthDown: n.MonthDown, Apps: []AppRate{}, Events: []Event{}}
 	for g, v := range n.ByGroup {
 		// A DIRECT group can be the direct route or the default's DIRECT; count it as direct.
-		id := a.routeOfGroup(g, "x")
+		id := a.routeTable().OfChain(g, "x")
 		if id != "" {
 			t.ByRoute[id] += v
 		}
@@ -1368,13 +1509,14 @@ func (a *App) buildTick() Tick {
 	// Today's share per route: the bytes since the last tick, as the
 	// monitor counted them, however long ago that was.
 	day := time.Now().Format("2006-01-02")
+	table := a.routeTable() // before a.mu: it takes it too
 	a.mu.Lock()
 	if a.shareDay != day {
 		a.shareDay, a.routeBytes = day, map[string]int64{}
 	}
 	for g, v := range n.GroupBytes {
 		if d := v - a.groupSeen[g]; d > 0 {
-			if id := a.routeOfGroup(g, "x"); id != "" {
+			if id := table.OfChain(g, "x"); id != "" {
 				a.routeBytes[id] += d
 			}
 		}
@@ -1404,7 +1546,7 @@ func (a *App) buildTick() Tick {
 		if !seen || c.DownRate > b.rate || c.DownRate == b.rate &&
 			(c.Start.Before(b.start) || c.Start.Equal(b.start) && c.ID > b.id) {
 			best[c.App] = top{c.DownRate, c.Start, c.ID}
-			r.Host, r.Route = c.Host, a.routeOfGroup(c.Group, c.Rule)
+			r.Host, r.Route = c.Host, a.routeTable().OfChain(c.Group, c.Rule)
 		}
 	}
 	for _, r := range apps {
@@ -1424,7 +1566,7 @@ func (a *App) buildTick() Tick {
 		if len(e.Chains) > 0 {
 			group = e.Chains[len(e.Chains)-1]
 		}
-		ev := Event{Time: e.Time, Text: e.App + " → " + e.Host, Route: a.routeOfGroup(group, "x"), Failed: e.Failed}
+		ev := Event{Time: e.Time, Text: e.App + " → " + e.Host, Route: a.routeTable().OfChain(group, "x"), Failed: e.Failed}
 		if len(e.Chains) > 1 {
 			ev.Node = a.display(e.Chains[0])
 		}
@@ -1464,11 +1606,24 @@ func (a *App) emit() {
 	})
 }
 
+// isDirect is whether node, at the end of a route's choices, sends traffic
+// out without a proxy: mihomo's DIRECT, or an external core's own Direct
+// outbound, whatever it is named.
+func isDirect(px map[string]mihomo.Proxy, node string) bool {
+	return node == "DIRECT" || px[node].Type == "Direct"
+}
+
 func (a *App) snapshot() Snapshot {
 	s := a.settings.Get()
+	if a.core.External() {
+		// The mode and the rules are the built-in core's; bowel neither
+		// shows nor changes an external core's.
+		s.Mode, s.Rules = "rule", nil
+	}
 	cs := a.core.Status()
 	a.mu.Lock()
 	sys, px, provNodes, you, sw := a.sys, a.proxies, a.provNodes, a.you, a.switched
+	table, extNodes := a.routes, a.extNodes
 	openAtLogin := a.openAtLogin
 	gwp, gwErr := a.gwProbe, a.gwErr
 	pending := make([]string, 0, len(a.pending))
@@ -1482,43 +1637,52 @@ func (a *App) snapshot() Snapshot {
 
 	on := a.takeoverOn(s)
 	snap := Snapshot{
-		Mode: s.Mode, Pending: pending, Version: mygo.App.Version(), RuleCount: routes.Count(a.routes) + len(s.Rules),
+		Mode: s.Mode, Pending: pending, Version: mygo.App.Version(), RuleCount: routes.Count(table) + len(s.Rules),
 		Settings: s, ConfigPath: a.core.ConfigPath(), OpenAtLogin: openAtLogin,
 		ControllerTCP: a.core.TCPAddr(),
 		Core:          Core{State: string(cs.State), Version: cs.Version, Error: cs.Error},
 		Routes:        []RouteView{},
 		Nodes:         []NodeView{},
 		Providers:     []ProviderView{},
+		External:      a.core.External(),
+
+		RestartNeeded: coreChoiceOf(s) != a.boot,
 	}
 
-	// Takeover, as it really is.
-	tk := Takeover{On: on, Port: s.MixedPort, Lan: s.AllowLan, Bypass: s.Bypass}
-	tk.System = Entry{Wanted: s.SystemProxy, Status: "off"}
-	if on && s.SystemProxy {
-		switch {
-		case sys.Ours:
-			tk.System.Status = "on"
-		case sys.On:
-			tk.System.Status, tk.System.Detail = "hijacked", fmt.Sprintf(i18n.T("现在指向 %s:%d", "Now points at %s:%d"), sys.Host, sys.Port)
-		default:
-			tk.System.Status, tk.System.Detail = "hijacked", i18n.T("系统代理被关掉了", "The system proxy was turned off")
+	// Takeover, as it really is. An external core is not taken over by bowel: attached and answering is
+	// all there is to say, so On only says that the interface is live.
+	if snap.External {
+		snap.Takeover = Takeover{On: true, Port: s.MixedPort, System: Entry{Status: "off"}, Tun: Entry{Status: "off"}, Gateway: GatewayView{Status: "off"}}
+		on = true
+	} else {
+		tk := Takeover{On: on, Port: s.MixedPort, Lan: s.AllowLan, Bypass: s.Bypass}
+		tk.System = Entry{Wanted: s.SystemProxy, Status: "off"}
+		if on && s.SystemProxy {
+			switch {
+			case sys.Ours:
+				tk.System.Status = "on"
+			case sys.On:
+				tk.System.Status, tk.System.Detail = "hijacked", fmt.Sprintf(i18n.T("现在指向 %s:%d", "Now points at %s:%d"), sys.Host, sys.Port)
+			default:
+				tk.System.Status, tk.System.Detail = "hijacked", i18n.T("系统代理被关掉了", "The system proxy was turned off")
+			}
 		}
+		installed := tun.Installed(a.tunBin)
+		tk.Tun = Entry{Wanted: s.Tun, Status: "off"}
+		switch {
+		case on && s.Tun && installed && cs.State == core.Running:
+			tk.Tun.Status = "on"
+		case on && s.Tun && installed:
+			tk.Tun.Status, tk.Tun.Detail = "error", i18n.T("内核没有运行", "The core isn't running")
+		case !installed:
+			tk.Tun.Status = "install"
+		}
+		if s.AllowLan {
+			tk.LanAddr = lanAddr(s.MixedPort)
+		}
+		tk.Gateway = gatewayView(s, on, tk.Tun.Status, a.gw.System().Ready(), a.gw.Awake(), gwp, gwErr)
+		snap.Takeover = tk
 	}
-	installed := tun.Installed(a.tunBin)
-	tk.Tun = Entry{Wanted: s.Tun, Status: "off"}
-	switch {
-	case on && s.Tun && installed && cs.State == core.Running:
-		tk.Tun.Status = "on"
-	case on && s.Tun && installed:
-		tk.Tun.Status, tk.Tun.Detail = "error", i18n.T("内核没有运行", "The core isn't running")
-	case !installed:
-		tk.Tun.Status = "install"
-	}
-	if s.AllowLan {
-		tk.LanAddr = lanAddr(s.MixedPort)
-	}
-	tk.Gateway = gatewayView(s, on, tk.Tun.Status, a.gw.System().Ready(), a.gw.Awake(), gwp, gwErr)
-	snap.Takeover = tk
 
 	// Nodes, in their providers' order.
 	view := func(name string) NodeView {
@@ -1539,8 +1703,11 @@ func (a *App) snapshot() Snapshot {
 		}
 		return v
 	}
+	for _, n := range extNodes {
+		snap.Nodes = append(snap.Nodes, view(n))
+	}
 	for _, p := range a.providers.List() {
-		if !p.Enabled {
+		if !p.Enabled || a.core.External() {
 			continue
 		}
 		for _, n := range provNodes[p.ID] {
@@ -1553,7 +1720,7 @@ func (a *App) snapshot() Snapshot {
 	for _, v := range routeBytes {
 		total += v
 	}
-	for _, r := range a.routes {
+	for _, r := range table {
 		rv := RouteView{ID: r.ID, Name: routes.Title(r), Color: r.Color, Summary: routes.Describe(r), Rules: len(r.Rules), Direct: r.Direct}
 		if r.ID == routes.Default {
 			rv.Rules = 1
@@ -1565,10 +1732,16 @@ func (a *App) snapshot() Snapshot {
 		}
 		rv.Rules += rv.Mine
 		if !r.Direct {
-			rv.Auto = px[routes.Group(r)].Now == routes.Auto(r)
-			rv.Node = currentNode(px, r)
-			if rv.Node == "DIRECT" {
+			rv.Node, rv.Auto = r.Current(px)
+			if isDirect(px, rv.Node) {
 				rv.Node = ""
+			}
+			if snap.External {
+				g := px[r.Group]
+				rv.Picked = g.Now
+				for _, m := range g.All {
+					rv.Members = append(rv.Members, view(m))
+				}
 			}
 		}
 		if total > 0 {
@@ -1578,7 +1751,7 @@ func (a *App) snapshot() Snapshot {
 	}
 
 	// Exit and the user's place.
-	if n := currentNode(px, a.route(routes.Default)); n != "" && n != "DIRECT" {
+	if n, _ := a.route(routes.Default).Current(px); n != "" && !isDirect(px, n) {
 		snap.Exit = &Exit{Node: n, Where: view(n).Where}
 	}
 	if you != nil {
@@ -1586,15 +1759,18 @@ func (a *App) snapshot() Snapshot {
 		snap.You = &l
 	}
 
-	// Providers.
+	// Providers: an external core has none of bowel's.
 	for _, p := range a.providers.List() {
+		if snap.External {
+			break
+		}
 		v := a.providerView(p)
 		v.Nodes = len(provNodes[p.ID])
 		snap.Providers = append(snap.Providers, v)
 	}
 
 	// The one light, and the news line.
-	snap.State, snap.Issue = a.judge(on, s, cs, tk, snap, sw)
+	snap.State, snap.Issue = a.judge(on, s, cs, snap.Takeover, snap, sw)
 	return snap
 }
 
@@ -1612,7 +1788,11 @@ func (a *App) judge(on bool, s settings.Settings, cs core.Status, tk Takeover, s
 		return StateDegraded, &Issue{Level: "warn", Text: i18n.T("网关模式没有生效", "Gateway mode isn't working"), Detail: g.Detail}
 	}
 	if len(snap.Nodes) == 0 && s.Mode != "direct" {
-		return StateDegraded, &Issue{Level: "warn", Text: i18n.T("还没有节点，流量正在直连", "No nodes yet; traffic is going direct"), Action: "providers", Label: i18n.T("添加提供商", "Add Provider")}
+		is := &Issue{Level: "warn", Text: i18n.T("还没有节点，流量正在直连", "No nodes yet; traffic is going direct"), Action: "providers", Label: i18n.T("添加提供商", "Add Provider")}
+		if snap.External {
+			is.Action, is.Label = "", "" // its nodes are its own
+		}
+		return StateDegraded, is
 	}
 	if sw != nil && time.Since(sw.at) < 10*time.Minute {
 		return StateDegraded, &Issue{Level: "warn", Text: fmt.Sprintf(i18n.T("%s：%s 不可用，已换到 %s", "%s: %s is down, switched to %s"), routes.Title(a.route(sw.route)), sw.from, sw.to), Action: "activity", Label: i18n.T("查看", "View")}

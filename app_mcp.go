@@ -251,7 +251,7 @@ func (a *App) changeSettings(ctx context.Context, s *mcp.Session, what words, ed
 }
 
 // secretKeys are the settings an agent reads only as set or not.
-var secretKeys = []string{"extSecret", "authentication"}
+var secretKeys = []string{"extSecret", "coreSecret", "authentication"}
 
 // settingsMap is s as its JSON keys, with the secrets hidden.
 func settingsMap(s settings.Settings) map[string]any {
@@ -353,22 +353,33 @@ func (a *App) rulesDiff(old, next []routes.UserRule) []string {
 // findRoute is the route s names: its id, its Chinese name or its title.
 func (a *App) findRoute(s string) (routes.Route, error) {
 	s = strings.TrimSpace(s)
-	for _, r := range a.routes {
+	table := a.routeTable()
+	for _, r := range table {
 		if strings.EqualFold(s, r.ID) || s == r.Name || strings.EqualFold(s, routes.Title(r)) {
 			return r, nil
 		}
 	}
-	ids := make([]string, len(a.routes))
-	for i, r := range a.routes {
+	ids := make([]string, len(table))
+	for i, r := range table {
 		ids[i] = r.ID
 	}
 	return routes.Route{}, fmt.Errorf("%s: %q (%s)", i18n.T("没有这条路由", "No such route"), s, strings.Join(ids, ", "))
 }
 
-// findNode is the node s names: its name in the core, or its label when
-// one node has it.
-func (a *App) findNode(s string) (string, error) {
-	nodes := a.snapshot().Nodes
+// findNode is the node s names among the choices of a route: its name in
+// the core, or its label when one node has it. An external core's route
+// offers its group's members, which may be a Direct outbound or a group;
+// bowel's own offers every node.
+func (a *App) findNode(routeID, s string) (string, error) {
+	snap := a.snapshot()
+	nodes := snap.Nodes
+	if snap.External {
+		for _, r := range snap.Routes {
+			if r.ID == routeID {
+				nodes = r.Members
+			}
+		}
+	}
 	for _, n := range nodes {
 		if n.Name == s {
 			return n.Name, nil
@@ -402,6 +413,9 @@ type mcpRoute struct {
 	Node      string `json:"node,omitempty"`
 	NodeLabel string `json:"nodeLabel,omitempty"`
 	UserRules int    `json:"userRules"`
+	// Members are what an external core's route can use: the names of its
+	// group's nodes, groups and Direct outbounds.
+	Members []string `json:"members,omitempty"`
 }
 
 type mcpNode struct {
@@ -420,6 +434,9 @@ func (a *App) mcpRoutes(snap Snapshot) []mcpRoute {
 		v := mcpRoute{ID: r.ID, Name: r.Name, Summary: r.Summary, Direct: r.Direct, Auto: r.Auto, Node: r.Node, UserRules: r.Mine}
 		if r.Node != "" {
 			v.NodeLabel = a.display(r.Node)
+		}
+		for _, m := range r.Members {
+			v.Members = append(v.Members, m.Name)
 		}
 		out = append(out, v)
 	}
@@ -522,12 +539,21 @@ func str(desc string, enum ...string) map[string]any {
 	return m
 }
 
-func (a *App) mcpServer() *mcp.Server {
-	routeIDs := make([]string, len(a.routes))
-	for i, r := range a.routes {
+// routeArg is the schema of a tool's route argument, with the routes as
+// they are now: an external core's are found after the server is built.
+func (a *App) routeArg() map[string]any {
+	table := a.routeTable()
+	routeIDs := make([]string, len(table))
+	for i, r := range table {
 		routeIDs[i] = r.ID
 	}
-	routeArg := str("A route's id: "+strings.Join(routeIDs, ", ")+".", routeIDs...)
+	if len(routeIDs) == 0 {
+		return str("A route's id, as list_routes gives it.")
+	}
+	return str("A route's id: "+strings.Join(routeIDs, ", ")+".", routeIDs...)
+}
+
+func (a *App) mcpServer() *mcp.Server {
 	return &mcp.Server{
 		Name: "bowel", Title: "bowel", Version: mygo.App.Version(),
 		Instructions: mcpInstructions,
@@ -566,6 +592,9 @@ func (a *App) mcpServer() *mcp.Server {
 				Name: "list_rules", Title: "Your rules", ReadOnly: true,
 				Description: "The user's own rules, in the order they apply (before the built-in ones): what each matches and its route.",
 				Run: func(ctx context.Context, s *mcp.Session, _ json.RawMessage) (any, error) {
+					if a.core.External() {
+						return map[string]any{"rules": []mcpRule{}}, nil // its rules are its own
+					}
 					return map[string]any{"rules": mcpRules(a.settings.Get().Rules)}, nil
 				},
 			},
@@ -588,7 +617,11 @@ func (a *App) mcpServer() *mcp.Server {
 					} else {
 						return nil, err
 					}
-					id, rule, mine, sure := routes.Explain(host, a.settings.Get().Rules, a.routes)
+					if a.core.External() {
+						return map[string]any{"host": host, "site": routes.Site(host), "sure": false, "userRule": false,
+							"note": "The external core decides by its own rules; bowel can't tell which one applies. list_connections shows the rule that matched a real connection."}, nil
+					}
+					id, rule, mine, sure := routes.Explain(host, a.settings.Get().Rules, a.routeTable())
 					out := map[string]any{"host": host, "site": routes.Site(host), "sure": sure, "userRule": mine}
 					if sure {
 						out["route"], out["rule"] = id, rule
@@ -687,7 +720,7 @@ func (a *App) mcpServer() *mcp.Server {
 			{
 				Name: "test_route", Title: "Test a route's nodes",
 				Description: "Measures the delay of a route's nodes now, and returns them. Changes nothing.",
-				Input:       obj(map[string]any{"route": routeArg}, "route"),
+				Schema:      func() map[string]any { return obj(map[string]any{"route": a.routeArg()}, "route") },
 				Run: func(ctx context.Context, s *mcp.Session, raw json.RawMessage) (any, error) {
 					var p struct{ Route string }
 					if err := mcp.Args(raw, &p); err != nil {
@@ -790,7 +823,9 @@ func (a *App) mcpServer() *mcp.Server {
 			{
 				Name: "select_node", Title: "Choose a route's node",
 				Description: "Makes a proxied route use a node, or pick the fastest by itself (node \"auto\"). Nodes are named as list_routes gives them.",
-				Input:       obj(map[string]any{"route": routeArg, "node": str("A node's name or label, or \"auto\".")}, "route", "node"),
+				Schema: func() map[string]any {
+					return obj(map[string]any{"route": a.routeArg(), "node": str("A node's name or label, or \"auto\".")}, "route", "node")
+				},
 				Run: func(ctx context.Context, s *mcp.Session, raw json.RawMessage) (any, error) {
 					var p struct{ Route, Node string }
 					if err := mcp.Args(raw, &p); err != nil {
@@ -804,8 +839,11 @@ func (a *App) mcpServer() *mcp.Server {
 						return nil, errors.New("the direct route uses no node")
 					}
 					node, label := "", i18n.T("自动", "Auto")
+					if a.core.External() && (p.Node == "" || strings.EqualFold(p.Node, "auto")) && r.Auto == "" {
+						return nil, errors.New(i18n.T("这条路由没有自动选择的分组，请指定一个节点", "This route has no automatic group; name one of its members"))
+					}
 					if !strings.EqualFold(p.Node, "auto") && p.Node != "" {
-						if node, err = a.findNode(p.Node); err != nil {
+						if node, err = a.findNode(r.ID, p.Node); err != nil {
 							return nil, err
 						}
 						label = a.display(node)
@@ -827,11 +865,13 @@ func (a *App) mcpServer() *mcp.Server {
 			{
 				Name: "add_rule", Title: "Add a rule",
 				Description: "Sends traffic to a route with a rule of the user's, which wins over the built-in ones. It replaces a rule for the same traffic. Open connections it now sends elsewhere are closed, so the change shows at once. kind: suffix (the domain and its subdomains; the default for names), domain (that name only), keyword (names containing it), ip (an address or CIDR; the default for addresses).",
-				Input: obj(map[string]any{
-					"target": str("A domain, *.domain, URL, keyword or IP/CIDR."),
-					"route":  routeArg,
-					"kind":   str("The kind of rule; guessed when left out.", routes.Kinds...),
-				}, "target", "route"),
+				Schema: func() map[string]any {
+					return obj(map[string]any{
+						"target": str("A domain, *.domain, URL, keyword or IP/CIDR."),
+						"route":  a.routeArg(),
+						"kind":   str("The kind of rule; guessed when left out.", routes.Kinds...),
+					}, "target", "route")
+				},
 				Run: func(ctx context.Context, s *mcp.Session, raw json.RawMessage) (any, error) {
 					var p struct{ Target, Route, Kind string }
 					if err := mcp.Args(raw, &p); err != nil {

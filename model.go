@@ -29,6 +29,10 @@ type Snapshot struct {
 	State State  `json:"state"`
 	Issue *Issue `json:"issue,omitempty"`
 	Core  Core   `json:"core"`
+	// External: the core is someone else's, with its own routes and nodes.
+	External bool `json:"external"`
+	// RestartNeeded: the saved choice of core is not the one running.
+	RestartNeeded bool `json:"restartNeeded"`
 	// Mode is "rule", "global" or "direct".
 	Mode      string         `json:"mode"`
 	Takeover  Takeover       `json:"takeover"`
@@ -127,6 +131,10 @@ type RouteView struct {
 	Auto bool `json:"auto"`
 	// Node is the node in use (a NodeView name), "" for direct routes.
 	Node string `json:"node"`
+	// Members and Picked are an external core's: what its group can be
+	// pointed at (nodes, and groups of its own), and the one it is.
+	Members []NodeView `json:"members,omitempty"`
+	Picked  string     `json:"picked,omitempty"`
 	// Share is the route's part of today's download, 0–1.
 	Share float64 `json:"share"`
 }

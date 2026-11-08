@@ -270,15 +270,31 @@ func init() {
 	}
 }
 
+// sections are the pages the window lists: for someone else's core, only
+// what is bowel's own, since the rest sets bowel's core.
+func (u *UI) sections() []settingsSection {
+	if !u.snap.External {
+		return settingsSections
+	}
+	var own []settingsSection
+	for _, sec := range settingsSections {
+		if slices.Contains([]string{"general", "core", "mcp", "about"}, sec.id) {
+			own = append(own, sec)
+		}
+	}
+	return own
+}
+
 // settingsSection is the page chosen in the sidebar, the first at first.
 func (u *UI) settingsSection() settingsSection {
-	for _, sec := range settingsSections {
+	secs := u.sections()
+	for _, sec := range secs {
 		if sec.id == u.set.section {
 			return sec
 		}
 	}
-	u.set.section = settingsSections[0].id
-	return settingsSections[0]
+	u.set.section = secs[0].id
+	return secs[0]
 }
 
 func coreStateWord(state string) string {
@@ -312,7 +328,7 @@ func (u *UI) settingsSidebar(c *ui.Context, p *pal) {
 			sel = ""
 		}
 		ui.Sidebar(c.Key("nav"), &sel, func() {
-			for _, sec := range settingsSections {
+			for _, sec := range u.sections() {
 				ui.SidebarItem(c.Key(sec.id), sec.id, sec.icon, sec.name())
 			}
 		}).Grow(1).Padding(0, 10).Background(p.paper2).Label(i18n.T("设置", "Settings"))
@@ -336,8 +352,11 @@ func (u *UI) settingsSidebar(c *ui.Context, p *pal) {
 			}
 			ui.Box(c).Size(6, 6).Radius(p.r(3)).Background(col).Shrink(0)
 			ver := "mihomo"
+			if u.snap.External {
+				ver = ""
+			}
 			if cs.Version != "" {
-				ver += " " + cs.Version
+				ver = strings.TrimSpace(ver + " " + cs.Version)
 			}
 			// MinWidth(0): a line that doesn't wrap is otherwise as wide as
 			// its words, and a long version runs into the pane.
@@ -398,7 +417,7 @@ func (u *UI) searchResults(c *ui.Context, p *pal, words []string) {
 	optFind = f
 	defer func() { optFind = nil }()
 	s := u.shownSettings()
-	for _, sec := range settingsSections {
+	for _, sec := range u.sections() {
 		f.sec, f.head = sec.name(), func() { u.searchHead(c, p, sec) }
 		f.jump = func(title string) { u.searchJump(sec.id, title) }
 		ui.Column(c.Key(sec.id)).Children(func() { sec.body(u, c, p, s) })
@@ -745,8 +764,54 @@ func (u *UI) inboundSection(c *ui.Context, p *pal, s settings.Settings) {
 	})
 }
 
+// coreSource chooses whose core bowel drives. The choice is read when bowel
+// starts, so a change waits for the next start.
+func (u *UI) coreSource(c *ui.Context, p *pal, s settings.Settings) {
+	optRow(c, p, i18n.T("内核来源", "Core source"), i18n.T("bowel 自带的 mihomo，或一个已在运行的外部内核（如 sing-box）；改动在重启 bowel 后生效", "The mihomo bowel brings, or an external core that is already running (sing-box, say); a change applies when bowel restarts"), func() {
+		labels := []string{i18n.T("内置 mihomo", "Built-in mihomo"), i18n.T("外部内核", "External core")}
+		sel := 0
+		if s.CoreSource == "external" {
+			sel = 1
+		}
+		if actSeg(c.Key("source"), p, &sel, labels).Changed() {
+			u.setOpt(func(s *settings.Settings) {
+				s.CoreSource = []string{"", "external"}[sel]
+				if sel == 1 && s.CoreAddr == "" {
+					s.CoreAddr = "127.0.0.1:9090"
+				}
+			})
+		}
+	})
+	if u.snap.RestartNeeded {
+		optRow(c, p, i18n.T("重启 bowel", "Restart bowel"), i18n.T("换了内核来源或控制器，重启后才会用上", "The core or controller you chose is used after a restart"), func() {
+			btn(c.Key("relaunch"), p, i18n.T("立即重启", "Restart now")).OnClick(mygo.App.Relaunch)
+		})
+	}
+	if s.CoreSource != "external" {
+		return
+	}
+	optRow(c, p, i18n.T("控制器地址", "Controller address"), i18n.T("外部内核的 Clash API 地址，主机:端口", "The external core's Clash API, as host:port"), func() {
+		u.optText(c, p, "coreaddr", i18n.T("控制器地址", "Controller address"), s.CoreAddr, 180, func(v string) {
+			v = strings.TrimSpace(v)
+			u.setOpt(func(s *settings.Settings) { s.CoreAddr = v })
+		}).Placeholder("127.0.0.1:9090")
+	})
+	optRow(c, p, i18n.T("密钥", "Secret"), i18n.T("控制器要求时填写，没有就留空", "If the controller asks for one; empty if not"), func() {
+		u.optText(c, p, "coresecret", i18n.T("密钥", "Secret"), s.CoreSecret, 180, func(v string) {
+			u.setOpt(func(s *settings.Settings) { s.CoreSecret = v })
+		}).Password()
+	})
+}
+
 func (u *UI) coreSection(c *ui.Context, p *pal, s settings.Settings) {
+	if u.snap.External {
+		sectionNote(c, p, i18n.T("外部内核由它自己管理，bowel 只读取它，并能切换节点", "The external core manages itself; bowel only reads it and can switch its nodes"))
+		u.coreSource(c, p, s)
+		return
+	}
 	sectionNote(c, p, i18n.T("mihomo 自己的行为", "How mihomo itself behaves"))
+	u.coreSource(c, p, s)
+	optHeading(c, p, "mihomo")
 	optRow(c, p, i18n.T("日志级别", "Log level"), i18n.T("「日志」页里内核日志的详细程度", "How detailed the core's log on the Log page is"), func() {
 		u.optChoice(c, p, "log", settings.LogLevels, s.LogLevel, func(v string) {
 			u.setOpt(func(s *settings.Settings) { s.LogLevel = v })
@@ -1023,15 +1088,22 @@ func (u *UI) aboutSection(c *ui.Context, p *pal, _ settings.Settings) {
 			if moho == "" {
 				moho = "—"
 			}
-			kv(c, p, [][2]string{
+			rows := [][2]string{
 				{i18n.T("内核版本", "Core version"), ver},
 				{i18n.T("内核状态", "Core state"), state},
 				{i18n.T("运行配置", "Running config"), path},
 				{i18n.T("bowel 版本", "bowel version"), moho},
 				{i18n.T("代理内核", "Proxy core"), i18n.T("mihomo · GPL-3.0 · 不提供任何担保 · 许可证随应用附带，源码见 github.com/21stware/bowel/releases", "mihomo · GPL-3.0 · no warranty · license included in the app, source at github.com/21stware/bowel/releases")},
 				{i18n.T("界面字体", "Interface font"), i18n.T("OPPO Sans 4.0 · © OPPO 广东移动通信有限公司，依 OPPO Sans 字体许可使用", "OPPO Sans 4.0 · © Guangdong OPPO Mobile Telecommunications Corp., Ltd., used under the OPPO Sans font license")},
-			})
+			}
+			if u.snap.External {
+				rows = slices.Delete(rows, 2, 3) // an external core's config is not bowel's
+			}
+			kv(c, p, rows)
 		})
+	}
+	if u.snap.External {
+		return
 	}
 	optRow(c, p, i18n.T("运行配置", "Running config"), i18n.T("bowel 生成、mihomo 正在用的配置文件", "The config file bowel writes and mihomo runs on"), func() {
 		btn(c.Key("reveal"), p, i18n.T("在 Finder 中显示", "Show in Finder")).OnClick(func() {

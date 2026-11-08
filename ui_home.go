@@ -328,7 +328,7 @@ func variant(r ui.Rect) string {
 
 func (u *UI) homePage(c *ui.Context, p *pal) {
 	h := &u.home
-	if !u.snap.Takeover.On && h.x != "" {
+	if !u.snap.Takeover.On && h.x != "" || u.snap.External && (h.x == "mode" || h.x == "takeover") {
 		h.x, h.sub = "", ""
 	}
 	c.OnWindowShortcut(0, ui.KeyEscape, func() {
@@ -397,7 +397,7 @@ func (u *UI) cell(c *ui.Context, p *pal, cl cell, box, normalBox ui.Rect) {
 	}
 	if v != "expanded" && cl.id != "map" || cl.id == "map" && v != "expanded" {
 		e.OnClick(func() {
-			if u.snap.Takeover.On {
+			if u.snap.Takeover.On && !(u.snap.External && (cl.id == "mode" || cl.id == "takeover")) {
 				u.home.x, u.home.sub, u.home.query, u.home.region = cl.id, "", "", ""
 			}
 		})
@@ -830,6 +830,10 @@ func wavyLine(path *ui.Path, gap float32, a, b [2]float32, down bool) {
 }
 
 func (u *UI) viewOf(c *ui.Context, p *pal, id, v string, box ui.Rect) {
+	if u.snap.External && (id == "mode" || id == "takeover") {
+		u.coreCell(c, p, id, v)
+		return
+	}
 	switch v {
 	case "normal":
 		u.normalView(c, p, id)
@@ -978,7 +982,9 @@ func (u *UI) compactView(c *ui.Context, p *pal, id, v string) {
 			})
 		}, sub, func() {
 			if ok {
-				ui.Text(c, i18n.T("来自 ", "From ")+u.providerName(ex.Provider)).FontSize(12).TextColor(p.ink2).MaxLines(1).Ellipsis("…")
+				if !s.External {
+					ui.Text(c, i18n.T("来自 ", "From ")+u.providerName(ex.Provider)).FontSize(12).TextColor(p.ink2).MaxLines(1).Ellipsis("…")
+				}
 				mode := i18n.T("手动选择", "Manual")
 				if u.route("default").Auto {
 					mode = i18n.T("自动选最快", "Auto-pick fastest")
@@ -1033,7 +1039,7 @@ func (u *UI) compactView(c *ui.Context, p *pal, id, v string) {
 					for _, r := range proxied {
 						ui.Row(c).Gap(5).Children(func() {
 							swatch(c, p.routeColor(r.ID), 8)
-							name := "—"
+							name := i18n.T("直接连接", "Direct")
 							if n, ok := u.node(r.Node); ok {
 								name = n.Display
 							}
@@ -1185,6 +1191,10 @@ func (u *UI) heroNormal(c *ui.Context, p *pal) {
 						if ex.Type != "" {
 							lead += ex.Type + " · "
 						}
+						if s.External { // its nodes have no provider
+							ui.Text(c, strings.TrimSuffix(strings.TrimSpace(lead), "·")).FontSize(13.5).TextColor(p.ink2)
+							return
+						}
 						ui.RichText(c, ui.Span{Text: lead + i18n.T("来自 ", "From "), Size: 13.5, Color: p.ink2},
 							ui.Span{Text: u.providerName(ex.Provider), Size: 13.5, Weight: 600, Color: p.ink}).
 							MaxLines(1).Ellipsis("…").Shrink(1).MinWidth(0).Tooltip(u.providerName(ex.Provider))
@@ -1200,6 +1210,8 @@ func (u *UI) heroNormal(c *ui.Context, p *pal) {
 				})
 			case s.Mode == "direct":
 				ui.Text(c, i18n.T("直连模式：所有流量不经过任何节点，规则暂停。适合排查网络问题。", "Direct mode: no traffic goes through any node and rules are paused. Useful for troubleshooting the network.")).FontSize(13.5).TextColor(p.ink2)
+			case s.External:
+				ui.Text(c, i18n.T("这个内核里还没有节点。", "The core has no nodes yet.")).FontSize(13.5).TextColor(p.ink2)
 			default:
 				ui.Text(c, i18n.T("添加一个提供商（订阅链接、节点链接或配置文件），节点就会出现在这里。现在所有流量都在直接连接。", "Add a provider (a subscription link, node link or config file) and its nodes show up here. For now all traffic connects directly.")).FontSize(13.5).TextColor(p.ink2)
 			}
@@ -1234,6 +1246,9 @@ func (u *UI) heroNormal(c *ui.Context, p *pal) {
 			ui.Row(c).Gap(10).Margin(16, 0, 0, 0).Children(func() {
 				pill(c, p, i18n.T("换节点", "Change node"), true).OnClick(func() { u.home.x = "hero" })
 				def := u.route("default")
+				if s.External {
+					return
+				}
 				g := pill(c, p, i18n.T("自动选最快", "Auto-pick fastest"), false)
 				if def.Auto {
 					g.Border(1.5, p.ink)
@@ -1244,7 +1259,7 @@ func (u *UI) heroNormal(c *ui.Context, p *pal) {
 					}
 				})
 			})
-		} else if len(s.Nodes) == 0 && s.Mode != "direct" {
+		} else if len(s.Nodes) == 0 && s.Mode != "direct" && !s.External {
 			pill(c, p, i18n.T("添加提供商", "Add provider"), true).AlignSelf(ui.Start).OnClick(func() { u.page = "providers" })
 		}
 	})
@@ -1360,6 +1375,9 @@ func (u *UI) heroExpanded(c *ui.Context, p *pal, w float32) {
 
 // autoSeg chooses automatic or manual for a route.
 func (u *UI) autoSeg(c *ui.Context, p *pal, rid string) {
+	if u.snap.External {
+		return
+	}
 	r := u.route(rid)
 	ui.Row(c).Padding(2).Radius(p.r(8)).Background(p.hair2).Children(func() {
 		for _, opt := range []struct {
@@ -1513,7 +1531,7 @@ func (u *UI) nodePicker(c *ui.Context, p *pal, rid string, w float32) {
 	}
 	var list []NodeView
 	q := strings.ToLower(strings.TrimSpace(h.query))
-	for _, n := range u.snap.Nodes {
+	for _, n := range u.pickable(r) {
 		if h.region == "?" && n.Where.Place != nil || h.region != "" && h.region != "?" && (n.Where.Place == nil || n.Where.Place.Country != h.region) {
 			continue
 		}
@@ -1529,7 +1547,7 @@ func (u *UI) nodePicker(c *ui.Context, p *pal, rid string, w float32) {
 	}
 	ui.List(c.Key("nodes"), &h.nodes, len(list), func(i int) {
 		n := list[i]
-		on := r.Node == n.Name
+		on := u.picked(r, n)
 		sw := u.pending("node:"+rid) && on
 		row := ui.ButtonBase(c.Key(n.Name)).Padding(8, 26).Gap(10).Row().AlignItems(ui.Center).BorderWidth(0, 0, 1, 0).BorderColor(p.hair2)
 		ink, sub := p.ink, p.mute
@@ -1931,12 +1949,31 @@ func kv(c *ui.Context, p *pal, rows [][2]string) {
 func (u *UI) routesNormal(c *ui.Context, p *pal) {
 	pad(c, 16).Children(func() {
 		cellKicker(c, p, "routes", i18n.T("其他路由", "Other routes"))
+		var others []RouteView
+		for _, r := range u.snap.Routes {
+			if r.ID != "default" {
+				others = append(others, r)
+			}
+		}
+		// What the cell holds is five rows; a core with more shows the first
+		// few and counts the rest.
+		const rows = 5
+		shown := others
+		if len(others) > rows {
+			shown = others[:rows-2]
+		}
 		ui.Column(c).Margin(4, 0, 0, 0).Children(func() {
-			for _, r := range u.snap.Routes {
-				if r.ID == "default" {
-					continue
-				}
+			for _, r := range shown {
 				u.routeRow(c, p, r)
+			}
+			if more := len(others) - len(shown); more > 0 {
+				ui.ButtonBase(c.Key("more")).Padding(6, 0).OnClick(func() {
+					if u.snap.Takeover.On {
+						u.home.x, u.home.sub, u.home.query, u.home.region = "routes", "", "", ""
+					}
+				}).Children(func() {
+					ui.Text(c, fmt.Sprintf(i18n.T("还有 %d 条路由", "%d more routes"), more)).FontSize(12).TextColor(p.mute)
+				})
 			}
 		})
 	})
@@ -2009,7 +2046,9 @@ func (u *UI) routesExpanded(c *ui.Context, p *pal, w float32) {
 		return
 	}
 	u.detailHead(c, p, "routes", i18n.T("路由", "Route"), func() { detailTitle(c, p, i18n.T("每类流量走哪里", "Where each kind of traffic goes")) }, func() {
-		btn(c.Key("rules"), p, i18n.T("管理规则", "Manage rules")).OnClick(u.openRules)
+		if !u.snap.External {
+			btn(c.Key("rules"), p, i18n.T("管理规则", "Manage rules")).OnClick(u.openRules)
+		}
 	})
 	ui.Scroll(c).Grow(1).Padding(4, 16, 18, 16).Children(func() {
 		for _, r := range u.snap.Routes {
@@ -2035,7 +2074,11 @@ func (u *UI) routesExpanded(c *ui.Context, p *pal, w float32) {
 					if r.Mine > 0 {
 						summary = fmt.Sprintf(i18n.T("含你加的 %d 条 · %s", "%d of them yours · %s"), r.Mine, summary)
 					}
-					ui.Text(c, fmt.Sprintf(i18n.T("%[1]d 条规则 · %[3]s", "%d %s · %s"), r.Rules, rulesWord(r.Rules), summary)).
+					text := fmt.Sprintf(i18n.T("%[1]d 条规则 · %[3]s", "%d %s · %s"), r.Rules, rulesWord(r.Rules), summary)
+					if summary == "" {
+						text = fmt.Sprintf(i18n.T("%[1]d 条规则", "%d %s"), r.Rules, rulesWord(r.Rules))
+					}
+					ui.Text(c, text).
 						FontSize(12).TextColor(p.mute).SingleLine().Shrink(1).Margin(0, 0, 0, 22)
 				})
 				name := i18n.T("直接连接", "Direct")
@@ -2112,13 +2155,28 @@ func speedLine(c *ui.Context, p *pal, t Tick) ui.Element {
 	})
 }
 
+// barOrder is the routes from the bottom of a bar up: Direct first. Bowel's
+// own core has five; an external core's are the ones it reports.
+func (u *UI) barOrder() []string {
+	if !u.snap.External {
+		return []string{"direct", "dev", "ai", "default", "media"}
+	}
+	order := []string{"direct"}
+	for _, r := range u.snap.Routes {
+		if r.ID != "direct" {
+			order = append(order, r.ID)
+		}
+	}
+	return order
+}
+
 // trafficBars stacks each second's download by route, in route colors.
 func (u *UI) trafficBars(c *ui.Context, p *pal, n int) ui.Element {
 	hist := u.home.hist
 	if len(hist) > n {
 		hist = hist[len(hist)-n:]
 	}
-	order := []string{"direct", "dev", "ai", "default", "media"}
+	order := u.barOrder()
 	return ui.Box(c).FillWidth().Draw(func(pt *ui.Painter, r ui.Rect) {
 		if !u.snap.Takeover.On {
 			pt.Fill(ui.Rect{X: r.X, Y: r.Y + r.H - 1, W: r.W, H: 1}, p.hair, 0)
@@ -2304,4 +2362,43 @@ func rulesWord(n int) string {
 		return "rule"
 	}
 	return "rules"
+}
+
+// pickable is what a route can be pointed at: every node for the template's
+// routes, and for an external core's the members of the route's own group.
+func (u *UI) pickable(r RouteView) []NodeView {
+	if u.snap.External {
+		return r.Members
+	}
+	return u.snap.Nodes
+}
+
+// picked is whether n is what the route is pointed at.
+func (u *UI) picked(r RouteView, n NodeView) bool {
+	if u.snap.External {
+		return n.Name == r.Picked
+	}
+	return n.Name == r.Node
+}
+
+// coreCell stands for the mode and takeover cells when the core is
+// someone else's: bowel sets neither, so it says which core this is and
+// where it listens.
+func (u *UI) coreCell(c *ui.Context, p *pal, id, v string) {
+	s := u.snap
+	label, value, note := i18n.T("内核", "Core"), s.Core.Version, i18n.T("外部内核，由它自己管理", "External core, managed by itself")
+	if id == "takeover" {
+		label, value, note = i18n.T("控制器", "Controller"), s.ControllerTCP, i18n.T("bowel 只切换节点，不改动它", "bowel only switches nodes, nothing else")
+	}
+	if v != "normal" {
+		compact(c, p, v, id, label, func(size float32) {
+			disp(ui.Text(c, value), p).FontSize(size).FontWeight(600).TextColor(p.ink).NoWrap()
+		}, note, nil)
+		return
+	}
+	pad(c, 16).Children(func() {
+		cellKicker(c, p, id, label)
+		disp(ui.Text(c, value), p).FontSize(20).FontWeight(600).TextColor(p.ink).MaxLines(2).Ellipsis("…").Margin(10, 0, 0, 0)
+		ui.Text(c, note).FontSize(12).TextColor(p.mute).Margin(12, 0, 0, 0).MaxLines(2).Ellipsis("…")
+	})
 }
