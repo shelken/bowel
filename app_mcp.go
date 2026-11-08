@@ -592,6 +592,9 @@ func (a *App) mcpServer() *mcp.Server {
 				Name: "list_rules", Title: "Your rules", ReadOnly: true,
 				Description: "The user's own rules, in the order they apply (before the built-in ones): what each matches and its route.",
 				Run: func(ctx context.Context, s *mcp.Session, _ json.RawMessage) (any, error) {
+					if a.core.External() {
+						return map[string]any{"rules": []mcpRule{}}, nil // its rules are its own
+					}
 					return map[string]any{"rules": mcpRules(a.settings.Get().Rules)}, nil
 				},
 			},
@@ -613,6 +616,10 @@ func (a *App) mcpServer() *mcp.Server {
 						host, _, _ = strings.Cut(r.Value, "/")
 					} else {
 						return nil, err
+					}
+					if a.core.External() {
+						return map[string]any{"host": host, "site": routes.Site(host), "sure": false, "userRule": false,
+							"note": "The external core decides by its own rules; bowel can't tell which one applies. list_connections shows the rule that matched a real connection."}, nil
 					}
 					id, rule, mine, sure := routes.Explain(host, a.settings.Get().Rules, a.routeTable())
 					out := map[string]any{"host": host, "site": routes.Site(host), "sure": sure, "userRule": mine}

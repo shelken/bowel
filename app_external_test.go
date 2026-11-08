@@ -753,3 +753,39 @@ func TestExternalCoreMCPChoosesAmongTheRoutesMembers(t *testing.T) {
 		t.Errorf("puts %q", got)
 	}
 }
+
+// explain and list_rules read bowel's own rules, which an external core
+// never loads: what they say would be a guess about someone else's rules.
+func TestExternalCoreExplainDoesNotUseBuiltInRules(t *testing.T) {
+	a, _ := externalApp(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/version":
+			io.WriteString(w, `{"version":"sing-box 1.14.4"}`)
+		case "/proxies":
+			io.WriteString(w, `{"proxies":{
+				"GLOBAL":{"name":"GLOBAL","type":"Fallback","now":"main","all":["main"]},
+				"main":{"name":"main","type":"Selector","now":"n1","all":["n1"]},
+				"n1":{"name":"n1","type":"Shadowsocks"}}}`)
+		default:
+			io.WriteString(w, `{"rules":[],"providers":{},"connections":[]}`)
+		}
+	}))
+	a.refresh()
+	if _, err := a.settings.Update(func(s *settings.Settings) {
+		s.Rules = []routes.UserRule{{Kind: routes.KindSuffix, Value: "example.com", Route: "default"}}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := callTool(t, a.mcpServer(), &mcp.Session{}, "list_rules", nil); err != nil || len(out["rules"].([]any)) != 0 {
+		t.Errorf("list_rules shows the built-in core's rules: %v, %v", out, err)
+	}
+	for _, host := range []string{"example.com", "openai.com"} {
+		out, err := callTool(t, a.mcpServer(), &mcp.Session{}, "explain", map[string]any{"target": host})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if out["sure"] != false || out["userRule"] == true || out["route"] != nil {
+			t.Errorf("%s: explained from bowel's own rules: %v", host, out)
+		}
+	}
+}
