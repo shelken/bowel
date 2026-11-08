@@ -103,6 +103,41 @@ func TestDiscover(t *testing.T) {
 			want:  []string{`video group="video" auto="" direct=false rules=1 --r-ai`},
 		},
 		{
+			// "default" and "direct" mean the default and the direct route
+			// to the rest of Moho, whatever a core calls its own groups.
+			name: "a group named like a route Moho already has gets another id",
+			px: map[string]mihomo.Proxy{
+				"GLOBAL":    {Type: "Fallback", Now: "main", All: []string{"main"}},
+				"main":      group("n1", "n1"),
+				"default":   group("n1", "n1"),
+				"direct":    group("n1", "n1"),
+				"default-2": group("n1", "n1"),
+				"n1":        {Type: "Shadowsocks"},
+			},
+			rules: []mihomo.Rule{rule("route(default)", "a"), rule("route(direct)", "b"), rule("route(default-2)", "c")},
+			want: []string{
+				`default group="main" auto="" direct=false rules=0 --r-default`,
+				`default-3 group="default" auto="" direct=false rules=1 --r-ai`,
+				`direct-2 group="direct" auto="" direct=false rules=1 --r-media`,
+				`default-2 group="default-2" auto="" direct=false rules=1 --r-dev`,
+			},
+		},
+		{
+			name: "every Direct outbound is the one direct route",
+			px: map[string]mihomo.Proxy{
+				"GLOBAL":    {Type: "Fallback", Now: "main", All: []string{"main"}},
+				"main":      group("n1", "n1"),
+				"direct":    {Type: "Direct"},
+				"direct-v6": {Type: "Direct"},
+				"n1":        {Type: "Shadowsocks"},
+			},
+			rules: []mihomo.Rule{rule("route(direct)", "a"), rule("route(direct-v6)", "b")},
+			want: []string{
+				`default group="main" auto="" direct=false rules=0 --r-default`,
+				`direct group="" auto="" direct=true rules=2 --r-direct`,
+			},
+		},
+		{
 			name: "a target named without route() is a group's name, as mihomo reports it",
 			px:   px,
 			rules: []mihomo.Rule{

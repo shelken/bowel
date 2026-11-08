@@ -2,6 +2,7 @@ package routes
 
 import (
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/oboo/moho/internal/mihomo"
@@ -21,6 +22,8 @@ func Discover(px map[string]mihomo.Proxy, rules []mihomo.Rule) Table {
 	if len(t) > 0 {
 		at[def] = 0
 	}
+	used := map[string]bool{Default: true, "direct": true} // ids Moho gives its own routes
+	direct := -1                                           // index of the direct route
 	palette := []string{"--r-ai", "--r-media", "--r-dev"}
 	for _, rl := range rules {
 		name := target(rl.Proxy)
@@ -28,10 +31,21 @@ func Discover(px map[string]mihomo.Proxy, rules []mihomo.Rule) Table {
 		if !seen {
 			switch px[name].Type {
 			case "Selector":
-				t = append(t, Route{ID: name, Name: name, Group: name, Color: palette[0]})
+				id := name
+				for n := 2; used[id] || (id != name && px[id].Type == "Selector"); n++ {
+					id = name + "-" + strconv.Itoa(n)
+				}
+				used[id] = true
+				t = append(t, Route{ID: id, Name: name, Group: name, Color: palette[0]})
 				palette = append(palette[1:], palette[0])
 			case "Direct":
-				t = append(t, Route{ID: "direct", Name: "直连", Color: "--r-direct", Direct: true})
+				if direct < 0 {
+					t = append(t, Route{ID: "direct", Name: "直连", Color: "--r-direct", Direct: true})
+					direct = len(t) - 1
+				}
+				at[name] = direct
+				t[direct].Rules = append(t[direct].Rules, rl.Payload)
+				continue
 			default:
 				continue
 			}
