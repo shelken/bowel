@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"unicode"
@@ -60,6 +62,13 @@ type Settings struct {
 	// something: "ask" the user each time, "allow" it, or "deny" it.
 	// Reading is always allowed. "" is ask.
 	MCPPolicy string `json:"mcpPolicy"`
+
+	// CoreSource is whose core bowel drives: "" is the mihomo it starts
+	// itself, "external" is a controller someone else runs (a sing-box with
+	// clash_api, say) at CoreAddr, with CoreSecret if it asks for one.
+	CoreSource string `json:"coreSource"`
+	CoreAddr   string `json:"coreAddr"`
+	CoreSecret string `json:"coreSecret"`
 
 	// The core's options, the 设置 window's; their keys sit at this level.
 	core.Options
@@ -204,6 +213,16 @@ func (s Settings) Validate() error {
 	}
 	if s.MCPPolicy != "" && !slices.Contains(MCPPolicies, s.MCPPolicy) { // "" is ask
 		return fmt.Errorf(i18n.T("未知的 agent 变更策略: %s", "Unknown agent change policy: %s"), s.MCPPolicy)
+	}
+	switch s.CoreSource {
+	case "":
+	case "external":
+		host, port, err := net.SplitHostPort(s.CoreAddr)
+		if n, _ := strconv.Atoi(port); err != nil || host == "" || n < 1 || n > 65535 {
+			return errors.New(i18n.T("外部内核的地址要写成 主机:端口，如 127.0.0.1:9090", "The external core's address must be host:port, e.g. 127.0.0.1:9090"))
+		}
+	default:
+		return fmt.Errorf(i18n.T("未知内核来源: %s", "Unknown core source: %s"), s.CoreSource)
 	}
 	if s.MixedPort < 1 || s.MixedPort > 65535 {
 		return errors.New(i18n.T("端口要在 1 到 65535 之间", "The port must be between 1 and 65535"))
