@@ -348,14 +348,16 @@ func (a *App) shutdown() {
 	}
 	// Never leave the system pointing at a proxy that is gone: put back
 	// what it had before Moho took it over.
-	port := a.settings.Get().MixedPort
-	if s, err := sysproxy.Check(port); err == nil {
-		if s.Ours {
-			if err := a.disableProxy(port); err != nil {
-				log.Println("system proxy:", err)
+	// An external core owns the port and the proxy that points there.
+	if port := a.settings.Get().MixedPort; !a.core.External() {
+		if s, err := sysproxy.Check(port); err == nil {
+			if s.Ours {
+				if err := a.disableProxy(port); err != nil {
+					log.Println("system proxy:", err)
+				}
+			} else {
+				a.dropProxyBackup() // another program has the proxy now
 			}
-		} else {
-			a.dropProxyBackup() // another program has the proxy now
 		}
 	}
 	a.core.Stop()

@@ -116,6 +116,30 @@ func TestExternalCoreAttachIsReadOnly(t *testing.T) {
 	}
 }
 
+// The external core is on bowel's mixed port too, and the system proxy
+// that points there is the user's own: quitting must neither turn it off
+// nor forget what it was.
+func TestExternalCoreQuitLeavesSystemProxy(t *testing.T) {
+	a, dir := externalApp(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/version":
+			io.WriteString(w, `{"meta":true,"version":"sing-box 1.14.4"}`)
+		case "/proxies":
+			io.WriteString(w, `{"proxies":{"GLOBAL":{"name":"GLOBAL","type":"Fallback","now":"proxy","all":["proxy"]}}}`)
+		default:
+			io.WriteString(w, `{}`)
+		}
+	}))
+	backup := a.proxyBackup()
+	if err := os.WriteFile(backup, []byte(`{}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	a.shutdown()
+	if _, err := os.Stat(backup); err != nil {
+		t.Errorf("quitting dropped the proxy backup in %s: %v", dir, err)
+	}
+}
+
 // The routes and nodes of an external core are the ones it reports, not
 // bowel's template and not a provider's: a core that has no providers
 // still has nodes.
