@@ -121,8 +121,11 @@ func newApp() (*App, error) {
 	if tun.Installed(tunBin) {
 		run = tunBin
 	}
-	cm, err := core.New(run, filepath.Join(data, "core"))
-	if err != nil {
+	s := st.Get()
+	var cm *core.Manager
+	if s.CoreSource == "external" {
+		cm = core.NewExternal(s.CoreAddr, s.CoreSecret)
+	} else if cm, err = core.New(run, filepath.Join(data, "core")); err != nil {
 		return nil, err
 	}
 	probe, err := core.FreePort()
@@ -202,15 +205,27 @@ func (a *App) start() {
 	a.openAtLogin = mygo.App.OpenAtLogin()
 	a.openWindow()
 	a.setupTray()
-	a.copyGeo()
+	if !a.core.External() {
+		a.copyGeo()
+	}
 	go func() {
-		if err := a.applyConfig(); err != nil {
+		if err := a.startCore(); err != nil {
 			log.Println("core:", err)
 		}
 	}()
 	go a.loop()
 	go a.debugDriver()
 	a.startMCP()
+}
+
+// startCore brings the core up: it starts the built-in one with the
+// current config, or attaches to the external one, whose config is not
+// ours to write.
+func (a *App) startCore() error {
+	if a.core.External() {
+		return a.core.Connect()
+	}
+	return a.applyConfig()
 }
 
 func (a *App) openWindow() {
@@ -439,7 +454,11 @@ func (a *App) onCoreStatus(s core.Status) {
 
 // ---- Config ----
 
-func (a *App) takeoverOn(s settings.Settings) bool { return !s.Paused && (s.SystemProxy || s.Tun) }
+// An external core is not ours to point the system at: it takes over
+// by itself (a sing-box with a TUN inbound, say).
+func (a *App) takeoverOn(s settings.Settings) bool {
+	return !a.core.External() && !s.Paused && (s.SystemProxy || s.Tun)
+}
 
 // applyConfig rebuilds the runtime config and makes the core use it.
 func (a *App) applyConfig() error {
@@ -933,6 +952,10 @@ func (a *App) probe(node string) {
 }
 
 func (a *App) probeErr(ctx context.Context, node string) (locate.Result, error) {
+	// The probe is a listener that bowel adds to the core's config.
+	if a.core.External() {
+		return locate.Result{}, errors.New(i18n.T("外部内核无法实测出口位置", "An external core cannot measure exit locations"))
+	}
 	c, err := a.core.Client()
 	if err != nil {
 		return locate.Result{}, err

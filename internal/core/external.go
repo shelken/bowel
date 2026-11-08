@@ -18,6 +18,10 @@ func NewExternal(addr, secret string) *Manager {
 	}
 }
 
+// External reports whether the core is someone else's, so that bowel
+// must neither write its config nor change what it takes over.
+func (m *Manager) External() bool { return m.external }
+
 // Connect attaches to the external controller and keeps following it: it
 // is reported Failed when the controller goes away (the core restarts on
 // every config change) and Running again when it is back. The returned
