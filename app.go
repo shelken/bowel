@@ -1078,6 +1078,9 @@ func (a *App) detectProvider(input string) (string, error) {
 }
 
 func (a *App) addProvider(ctx context.Context, input string) (ProviderView, error) {
+	if err := a.errExternal(); err != nil {
+		return ProviderView{}, err
+	}
 	done := a.begin("add")
 	defer done()
 	p, err := a.providers.Add(ctx, a.http, input)
@@ -1088,6 +1091,9 @@ func (a *App) addProvider(ctx context.Context, input string) (ProviderView, erro
 }
 
 func (a *App) addProviderFile(ctx context.Context) (*ProviderView, error) {
+	if err := a.errExternal(); err != nil {
+		return nil, err
+	}
 	paths, err := mygo.Dialog.Open(mygo.OpenDialogOptions{
 		Parent: mygo.CallerWindow(ctx), Title: i18n.T("添加 Provider", "Add Provider"),
 		Filters: []mygo.FileFilter{{Name: i18n.T("Clash 配置或节点列表", "Clash config or node list"), Extensions: []string{"yaml", "yml", "txt", "conf"}}},
@@ -1127,6 +1133,9 @@ func (a *App) healthCheck(id string) {
 }
 
 func (a *App) updateProvider(ctx context.Context, id string) error {
+	if err := a.errExternal(); err != nil {
+		return err
+	}
 	done := a.begin("provider:" + id)
 	defer done()
 	if _, err := a.providers.Update(ctx, a.http, id); err != nil {
@@ -1139,6 +1148,9 @@ func (a *App) updateProvider(ctx context.Context, id string) error {
 }
 
 func (a *App) updateAll(ctx context.Context) error {
+	if err := a.errExternal(); err != nil {
+		return err
+	}
 	done := a.begin("providers")
 	defer done()
 	var errs []error
@@ -1156,6 +1168,9 @@ func (a *App) updateAll(ctx context.Context) error {
 }
 
 func (a *App) autoUpdate() {
+	if a.core.External() {
+		return
+	}
 	ids := a.providers.Due(time.Now())
 	for _, id := range ids {
 		if _, err := a.providers.Update(context.Background(), a.http, id); err != nil {
@@ -1168,6 +1183,9 @@ func (a *App) autoUpdate() {
 }
 
 func (a *App) setProviderEnabled(id string, on bool) error {
+	if err := a.errExternal(); err != nil {
+		return err
+	}
 	done := a.begin("provider:" + id)
 	defer done()
 	if _, err := a.providers.SetEnabled(id, on); err != nil {
@@ -1189,6 +1207,9 @@ func (a *App) setAutoUpdate(id string, hours int) error {
 }
 
 func (a *App) deleteProvider(id string) error {
+	if err := a.errExternal(); err != nil {
+		return err
+	}
 	done := a.begin("provider:" + id)
 	defer done()
 	if err := a.providers.Delete(id); err != nil {
@@ -1634,8 +1655,11 @@ func (a *App) snapshot() Snapshot {
 		snap.You = &l
 	}
 
-	// Providers.
+	// Providers: an external core has none of bowel's.
 	for _, p := range a.providers.List() {
+		if snap.External {
+			break
+		}
 		v := a.providerView(p)
 		v.Nodes = len(provNodes[p.ID])
 		snap.Providers = append(snap.Providers, v)
@@ -1680,9 +1704,6 @@ func (a *App) judge(on bool, s settings.Settings, cs core.Status, tk Takeover, s
 		}
 	}
 	for _, p := range snap.Providers {
-		if snap.External {
-			break
-		}
 		switch p.Warn {
 		case "quota":
 			return StateDegraded, &Issue{Level: "warn", Text: fmt.Sprintf(i18n.T("%s 流量快用完了", "%s is almost out of data"), p.Name), Action: "providers", Label: i18n.T("查看", "View")}

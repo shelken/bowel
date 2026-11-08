@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +16,7 @@ import (
 	"github.com/egoist/mygo"
 
 	"github.com/oboo/moho/internal/gateway"
+	"github.com/oboo/moho/internal/mihomo"
 	"github.com/oboo/moho/internal/routes"
 	"github.com/oboo/moho/internal/settings"
 	"github.com/oboo/moho/internal/sysproxy"
@@ -250,16 +253,24 @@ func TestExternalCoreRefusesToBeConfigured(t *testing.T) {
 		"mode":         func() error { return a.setMode("global") },
 		"gateway":      func() error { return a.setGateway(true) },
 		"port":         func() error { return a.updateSettings(func(s *settings.Settings) { s.MixedPort = 17999 }) },
-		"geo":          a.updateGeo,
-		"flush DNS":    a.flushDNS,
+		"provider": func() error {
+			_, err := a.addProvider(context.Background(), "hysteria2://pw@127.0.0.1:443?sni=x#test")
+			return err
+		},
+		"geo":       a.updateGeo,
+		"flush DNS": a.flushDNS,
 		"rule": func() error {
 			_, err := a.addRule(routes.UserRule{Kind: routes.KindSuffix, Value: "example.com", Route: "default"})
 			return err
 		},
 	} {
-		if err := act(); err == nil {
-			t.Errorf("%s: no error", name)
+		// Refused for what it is, not for failing at a later step.
+		if err := act(); err == nil || err.Error() != a.errExternal().Error() && !errors.Is(err, mihomo.ErrReadOnly) {
+			t.Errorf("%s: %v", name, err)
 		}
+	}
+	if ps := a.providers.List(); len(ps) > 0 {
+		t.Errorf("a provider was added: %v", ps)
 	}
 	_ = a.resetSettings()
 	if got := a.settings.Get(); !reflect.DeepEqual(got, before) {

@@ -120,3 +120,20 @@ func TestExternalTrayMenu(t *testing.T) {
 		}
 	}
 }
+
+// An external core has no providers: bowel has no page for them, and
+// neither a shortcut nor a pasted link opens one.
+func TestExternalHasNoProviderPage(t *testing.T) {
+	u := externalUI()
+	tt := ui.NewTesterWith(u.view, 1060, 760, ui.TesterOptions{})
+	tt.Advance(time.Second)
+	if tt.HasText("提供商") {
+		t.Errorf("the tabs show the provider page: %q", tt.Texts())
+	}
+	u.page = "providers"
+	tt.Frame()
+	tt.Advance(time.Second)
+	if u.page != "home" {
+		t.Errorf("the provider page opened: %q", u.page)
+	}
+}

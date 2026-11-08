@@ -290,12 +290,17 @@ func (u *UI) view(c *ui.Context) {
 	c.OnShortcut(ui.Cmd, ui.KeyW, func() { u.win.Hide() })
 	c.OnShortcut(ui.Cmd, ui.Key1, func() { u.page = "home" })
 	c.OnShortcut(ui.Cmd, ui.Key2, func() { u.page = "activity" })
-	c.OnShortcut(ui.Cmd, ui.Key3, func() { u.page = "providers" })
+	if u.snap.External && u.page == "providers" {
+		u.page = "home" // its nodes are its own: no providers to manage
+	}
+	if !u.snap.External {
+		c.OnShortcut(ui.Cmd, ui.Key3, func() { u.page = "providers" })
+	}
 	c.OnShortcut(ui.Cmd, ui.KeyComma, u.openSettings)
 	// ⌘V outside a text field, on another page, with a link or node list on
 	// the clipboard: open Provider with it in the add bar. Provider's own
 	// page handles ⌘V itself.
-	if u.page != "providers" && !c.FocusTakesText() && c.Shortcut(ui.Cmd, ui.KeyV) {
+	if u.page != "providers" && !u.snap.External && !c.FocusTakesText() && c.Shortcut(ui.Cmd, ui.KeyV) {
 		if s := strings.TrimSpace(c.ReadClipboard()); strings.Contains(s, "://") || strings.Contains(s, "proxies:") {
 			u.page, u.prov.input, u.prov.focus = "providers", s, true
 		}
@@ -336,6 +341,9 @@ func (u *UI) titleBar(c *ui.Context, p *pal) {
 		ui.Row(c).Gap(2).Padding(3).Radius(p.r(10)).Background(p.hair2).Shrink(0).Children(func() {
 			for _, pg := range pages {
 				id := pg.id
+				if id == "providers" && u.snap.External {
+					continue
+				}
 				on := u.page == id
 				b := ui.ButtonBase(c.Key(id)).Padding(4, 16).Radius(p.r(7))
 				if on {
