@@ -643,7 +643,7 @@ func (a *App) errExternal() error {
 	if !a.core.External() {
 		return nil
 	}
-	return errors.New(i18n.T("外部内核由它自己管理，bowel 不会改动它", "The external core manages itself; bowel does not change it"))
+	return errors.New(i18n.T("外部内核由它自己管理，bowel 只读取它，并能切换节点", "The external core manages itself; bowel only reads it and can switch its nodes"))
 }
 
 func (a *App) setTakeover(on bool) error {

@@ -800,7 +800,7 @@ func (u *UI) coreSource(c *ui.Context, p *pal, s settings.Settings) {
 
 func (u *UI) coreSection(c *ui.Context, p *pal, s settings.Settings) {
 	if u.snap.External {
-		sectionNote(c, p, i18n.T("外部内核由它自己管理，bowel 不会改动它", "The external core manages itself; bowel does not change it"))
+		sectionNote(c, p, i18n.T("外部内核由它自己管理，bowel 只读取它，并能切换节点", "The external core manages itself; bowel only reads it and can switch its nodes"))
 		u.coreSource(c, p, s)
 		return
 	}
