@@ -125,6 +125,14 @@ func (c *Client) Reload(ctx context.Context, path string) error {
 	return c.do(ctx, http.MethodPut, "/configs?force=true", map[string]string{"path": path}, nil)
 }
 
+// Rule is one entry of GET /rules. Proxy is its target: a group's name, or
+// in sing-box "route(<group>)" among its other actions.
+type Rule struct {
+	Type    string `json:"type"`
+	Payload string `json:"payload"`
+	Proxy   string `json:"proxy"`
+}
+
 // Proxy is one entry of GET /proxies: a node or a group.
 type Proxy struct {
 	Name    string    `json:"name"`
