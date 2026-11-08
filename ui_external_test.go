@@ -164,6 +164,25 @@ func TestExternalSettingsWindow(t *testing.T) {
 	}
 }
 
+// An external core has no config bowel wrote and no options bowel set, so
+// the about page offers neither to reveal nor to restore.
+func TestExternalAboutHasNoConfig(t *testing.T) {
+	u := externalUI()
+	u.snap.Settings = settings.Defaults.Clone()
+	tt := ui.NewTesterWith(u.settingsView, 760, 560, ui.TesterOptions{})
+	tt.Advance(time.Second)
+	if err := tt.Click("关于"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	wantTexts(t, tt, "内核版本", "bowel 版本")
+	for _, s := range []string{"运行配置", "在 Finder 中显示", "恢复默认"} {
+		if hasTextPart(tt, s) {
+			t.Errorf("the about page offers %q: %q", s, tt.Texts())
+		}
+	}
+}
+
 // An external core's connections can be read, not changed: no button
 // closes one, and no menu writes a rule for it.
 func TestExternalActivityOnlyReads(t *testing.T) {

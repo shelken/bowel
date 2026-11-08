@@ -1083,15 +1083,22 @@ func (u *UI) aboutSection(c *ui.Context, p *pal, _ settings.Settings) {
 			if moho == "" {
 				moho = "—"
 			}
-			kv(c, p, [][2]string{
+			rows := [][2]string{
 				{i18n.T("内核版本", "Core version"), ver},
 				{i18n.T("内核状态", "Core state"), state},
 				{i18n.T("运行配置", "Running config"), path},
 				{i18n.T("bowel 版本", "bowel version"), moho},
 				{i18n.T("代理内核", "Proxy core"), i18n.T("mihomo · GPL-3.0 · 不提供任何担保 · 许可证随应用附带，源码见 github.com/21stware/bowel/releases", "mihomo · GPL-3.0 · no warranty · license included in the app, source at github.com/21stware/bowel/releases")},
 				{i18n.T("界面字体", "Interface font"), i18n.T("OPPO Sans 4.0 · © OPPO 广东移动通信有限公司，依 OPPO Sans 字体许可使用", "OPPO Sans 4.0 · © Guangdong OPPO Mobile Telecommunications Corp., Ltd., used under the OPPO Sans font license")},
-			})
+			}
+			if u.snap.External {
+				rows = slices.Delete(rows, 2, 3) // an external core's config is not bowel's
+			}
+			kv(c, p, rows)
 		})
+	}
+	if u.snap.External {
+		return
 	}
 	optRow(c, p, i18n.T("运行配置", "Running config"), i18n.T("bowel 生成、mihomo 正在用的配置文件", "The config file bowel writes and mihomo runs on"), func() {
 		btn(c.Key("reveal"), p, i18n.T("在 Finder 中显示", "Show in Finder")).OnClick(func() {
