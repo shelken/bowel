@@ -2155,13 +2155,28 @@ func speedLine(c *ui.Context, p *pal, t Tick) ui.Element {
 	})
 }
 
+// barOrder is the routes from the bottom of a bar up: Direct first. Bowel's
+// own core has five; an external core's are the ones it reports.
+func (u *UI) barOrder() []string {
+	if !u.snap.External {
+		return []string{"direct", "dev", "ai", "default", "media"}
+	}
+	order := []string{"direct"}
+	for _, r := range u.snap.Routes {
+		if r.ID != "direct" {
+			order = append(order, r.ID)
+		}
+	}
+	return order
+}
+
 // trafficBars stacks each second's download by route, in route colors.
 func (u *UI) trafficBars(c *ui.Context, p *pal, n int) ui.Element {
 	hist := u.home.hist
 	if len(hist) > n {
 		hist = hist[len(hist)-n:]
 	}
-	order := []string{"direct", "dev", "ai", "default", "media"}
+	order := u.barOrder()
 	return ui.Box(c).FillWidth().Draw(func(pt *ui.Painter, r ui.Rect) {
 		if !u.snap.Takeover.On {
 			pt.Fill(ui.Rect{X: r.X, Y: r.Y + r.H - 1, W: r.W, H: 1}, p.hair, 0)

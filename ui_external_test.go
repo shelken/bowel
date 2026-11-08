@@ -342,3 +342,13 @@ func TestManyRoutesOnTheBoard(t *testing.T) {
 		t.Errorf("the template's routes are cut: %q", tt.Texts())
 	}
 }
+
+// The traffic bars stack the core's own routes, not only the five of the
+// built-in template: what is sent through a route named "work" is drawn.
+func TestExternalTrafficBarsStackTheCoreRoutes(t *testing.T) {
+	u := externalUI()
+	u.snap.Routes = []RouteView{{ID: "default"}, {ID: "work"}, {ID: "direct", Direct: true}}
+	if got, want := strings.Join(u.barOrder(), " "), "direct default work"; got != want {
+		t.Errorf("order %q, want %q", got, want)
+	}
+}
