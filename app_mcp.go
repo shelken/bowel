@@ -366,10 +366,20 @@ func (a *App) findRoute(s string) (routes.Route, error) {
 	return routes.Route{}, fmt.Errorf("%s: %q (%s)", i18n.T("没有这条路由", "No such route"), s, strings.Join(ids, ", "))
 }
 
-// findNode is the node s names: its name in the core, or its label when
-// one node has it.
-func (a *App) findNode(s string) (string, error) {
-	nodes := a.snapshot().Nodes
+// findNode is the node s names among the choices of a route: its name in
+// the core, or its label when one node has it. An external core's route
+// offers its group's members, which may be a Direct outbound or a group;
+// bowel's own offers every node.
+func (a *App) findNode(routeID, s string) (string, error) {
+	snap := a.snapshot()
+	nodes := snap.Nodes
+	if snap.External {
+		for _, r := range snap.Routes {
+			if r.ID == routeID {
+				nodes = r.Members
+			}
+		}
+	}
 	for _, n := range nodes {
 		if n.Name == s {
 			return n.Name, nil
@@ -403,6 +413,9 @@ type mcpRoute struct {
 	Node      string `json:"node,omitempty"`
 	NodeLabel string `json:"nodeLabel,omitempty"`
 	UserRules int    `json:"userRules"`
+	// Members are what an external core's route can use: the names of its
+	// group's nodes, groups and Direct outbounds.
+	Members []string `json:"members,omitempty"`
 }
 
 type mcpNode struct {
@@ -421,6 +434,9 @@ func (a *App) mcpRoutes(snap Snapshot) []mcpRoute {
 		v := mcpRoute{ID: r.ID, Name: r.Name, Summary: r.Summary, Direct: r.Direct, Auto: r.Auto, Node: r.Node, UserRules: r.Mine}
 		if r.Node != "" {
 			v.NodeLabel = a.display(r.Node)
+		}
+		for _, m := range r.Members {
+			v.Members = append(v.Members, m.Name)
 		}
 		out = append(out, v)
 	}
@@ -816,8 +832,11 @@ func (a *App) mcpServer() *mcp.Server {
 						return nil, errors.New("the direct route uses no node")
 					}
 					node, label := "", i18n.T("自动", "Auto")
+					if a.core.External() && (p.Node == "" || strings.EqualFold(p.Node, "auto")) && r.Auto == "" {
+						return nil, errors.New(i18n.T("这条路由没有自动选择的分组，请指定一个节点", "This route has no automatic group; name one of its members"))
+					}
 					if !strings.EqualFold(p.Node, "auto") && p.Node != "" {
-						if node, err = a.findNode(p.Node); err != nil {
+						if node, err = a.findNode(r.ID, p.Node); err != nil {
 							return nil, err
 						}
 						label = a.display(node)

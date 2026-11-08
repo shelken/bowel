@@ -170,7 +170,9 @@ func TestMCPPolicy(t *testing.T) {
 	}
 
 	// Secrets are hidden, and the hidden value can't be written back.
-	if _, err := a.settings.Update(func(s *settings.Settings) { s.ExtSecret, s.Authentication, s.CoreSecret = "hunter2", []string{"me:pw"}, "sbsecret" }); err != nil {
+	if _, err := a.settings.Update(func(s *settings.Settings) {
+		s.ExtSecret, s.Authentication, s.CoreSecret = "hunter2", []string{"me:pw"}, "sbsecret"
+	}); err != nil {
 		t.Fatal(err)
 	}
 	out, _ := callTool(t, srv, s, "get_settings", nil)

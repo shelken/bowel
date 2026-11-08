@@ -21,6 +21,7 @@ import (
 	"github.com/egoist/mygo"
 
 	"github.com/oboo/moho/internal/gateway"
+	"github.com/oboo/moho/internal/mcp"
 	"github.com/oboo/moho/internal/mihomo"
 	"github.com/oboo/moho/internal/routes"
 	"github.com/oboo/moho/internal/settings"
@@ -681,5 +682,74 @@ func TestExternalCoreExitMeasureFailureWaitsLong(t *testing.T) {
 	a.locateExits(false)
 	if traces.Load() != 1 {
 		t.Errorf("%d traces: a node that failed was tried again within the hour", traces.Load())
+	}
+}
+
+// An agent chooses among what a route's group offers, as a person does: a
+// Direct outbound or a group nested in it counts, though neither is a node
+// of the core's. list_routes says what that is, and "auto" is refused where
+// there is no automatic group to pick.
+func TestExternalCoreMCPChoosesAmongTheRoutesMembers(t *testing.T) {
+	var mu sync.Mutex
+	var puts []string
+	a, _ := externalApp(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPut {
+			b, _ := io.ReadAll(r.Body)
+			mu.Lock()
+			puts = append(puts, r.URL.Path+" "+strings.TrimSpace(string(b)))
+			mu.Unlock()
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		switch r.URL.Path {
+		case "/version":
+			io.WriteString(w, `{"version":"sing-box 1.14.4"}`)
+		case "/proxies":
+			io.WriteString(w, `{"proxies":{
+				"GLOBAL":{"name":"GLOBAL","type":"Fallback","now":"main","all":["main"]},
+				"main":{"name":"main","type":"Selector","now":"n1","all":["n1"]},
+				"lan":{"name":"lan","type":"Selector","now":"n1","all":["n1","direct","pool"]},
+				"pool":{"name":"pool","type":"Selector","now":"n1","all":["n1"]},
+				"direct":{"name":"direct","type":"Direct"},
+				"n1":{"name":"n1","type":"Shadowsocks"}}}`)
+		case "/rules":
+			io.WriteString(w, `{"rules":[{"type":"default","payload":"domain=a.example","proxy":"route(lan)"}]}`)
+		case "/providers/proxies":
+			io.WriteString(w, `{"providers":{}}`)
+		case "/connections":
+			io.WriteString(w, `{"connections":[]}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	a.refresh()
+	setPolicy(t, a, "allow")
+	srv, s := a.mcpServer(), &mcp.Session{}
+
+	out, err := callTool(t, srv, s, "list_routes", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var members string
+	for _, r := range out["routes"].([]any) {
+		if m := r.(map[string]any); m["id"] == "lan" {
+			members = fmt.Sprint(m["members"])
+		}
+	}
+	if members != "[n1 direct pool]" {
+		t.Errorf("lan members %q", members)
+	}
+	for _, node := range []string{"direct", "pool"} {
+		if _, err := callTool(t, srv, s, "select_node", map[string]any{"route": "lan", "node": node}); err != nil {
+			t.Errorf("select %s: %v", node, err)
+		}
+	}
+	if _, err := callTool(t, srv, s, "select_node", map[string]any{"route": "lan", "node": "auto"}); err == nil {
+		t.Error("auto was accepted by a route with no automatic group")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if got := strings.Join(puts, "|"); got != `/proxies/lan {"name":"direct"}|/proxies/lan {"name":"pool"}` {
+		t.Errorf("puts %q", got)
 	}
 }
