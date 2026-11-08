@@ -1524,34 +1524,40 @@ func (a *App) snapshot() Snapshot {
 		External:      a.core.External(),
 	}
 
-	// Takeover, as it really is.
-	tk := Takeover{On: on, Port: s.MixedPort, Lan: s.AllowLan, Bypass: s.Bypass}
-	tk.System = Entry{Wanted: s.SystemProxy, Status: "off"}
-	if on && s.SystemProxy {
-		switch {
-		case sys.Ours:
-			tk.System.Status = "on"
-		case sys.On:
-			tk.System.Status, tk.System.Detail = "hijacked", fmt.Sprintf(i18n.T("现在指向 %s:%d", "Now points at %s:%d"), sys.Host, sys.Port)
-		default:
-			tk.System.Status, tk.System.Detail = "hijacked", i18n.T("系统代理被关掉了", "The system proxy was turned off")
+	// Takeover, as it really is. An external core is not taken over by bowel: attached and answering is
+	// all there is to say, so On only says that the interface is live.
+	if snap.External {
+		snap.Takeover = Takeover{On: true, Port: s.MixedPort, System: Entry{Status: "off"}, Tun: Entry{Status: "off"}, Gateway: GatewayView{Status: "off"}}
+		on = true
+	} else {
+		tk := Takeover{On: on, Port: s.MixedPort, Lan: s.AllowLan, Bypass: s.Bypass}
+		tk.System = Entry{Wanted: s.SystemProxy, Status: "off"}
+		if on && s.SystemProxy {
+			switch {
+			case sys.Ours:
+				tk.System.Status = "on"
+			case sys.On:
+				tk.System.Status, tk.System.Detail = "hijacked", fmt.Sprintf(i18n.T("现在指向 %s:%d", "Now points at %s:%d"), sys.Host, sys.Port)
+			default:
+				tk.System.Status, tk.System.Detail = "hijacked", i18n.T("系统代理被关掉了", "The system proxy was turned off")
+			}
 		}
+		installed := tun.Installed(a.tunBin)
+		tk.Tun = Entry{Wanted: s.Tun, Status: "off"}
+		switch {
+		case on && s.Tun && installed && cs.State == core.Running:
+			tk.Tun.Status = "on"
+		case on && s.Tun && installed:
+			tk.Tun.Status, tk.Tun.Detail = "error", i18n.T("内核没有运行", "The core isn't running")
+		case !installed:
+			tk.Tun.Status = "install"
+		}
+		if s.AllowLan {
+			tk.LanAddr = lanAddr(s.MixedPort)
+		}
+		tk.Gateway = gatewayView(s, on, tk.Tun.Status, a.gw.System().Ready(), a.gw.Awake(), gwp, gwErr)
+		snap.Takeover = tk
 	}
-	installed := tun.Installed(a.tunBin)
-	tk.Tun = Entry{Wanted: s.Tun, Status: "off"}
-	switch {
-	case on && s.Tun && installed && cs.State == core.Running:
-		tk.Tun.Status = "on"
-	case on && s.Tun && installed:
-		tk.Tun.Status, tk.Tun.Detail = "error", i18n.T("内核没有运行", "The core isn't running")
-	case !installed:
-		tk.Tun.Status = "install"
-	}
-	if s.AllowLan {
-		tk.LanAddr = lanAddr(s.MixedPort)
-	}
-	tk.Gateway = gatewayView(s, on, tk.Tun.Status, a.gw.System().Ready(), a.gw.Awake(), gwp, gwErr)
-	snap.Takeover = tk
 
 	// Nodes, in their providers' order.
 	view := func(name string) NodeView {
@@ -1636,7 +1642,7 @@ func (a *App) snapshot() Snapshot {
 	}
 
 	// The one light, and the news line.
-	snap.State, snap.Issue = a.judge(on, s, cs, tk, snap, sw)
+	snap.State, snap.Issue = a.judge(on, s, cs, snap.Takeover, snap, sw)
 	return snap
 }
 
@@ -1654,7 +1660,11 @@ func (a *App) judge(on bool, s settings.Settings, cs core.Status, tk Takeover, s
 		return StateDegraded, &Issue{Level: "warn", Text: i18n.T("网关模式没有生效", "Gateway mode isn't working"), Detail: g.Detail}
 	}
 	if len(snap.Nodes) == 0 && s.Mode != "direct" {
-		return StateDegraded, &Issue{Level: "warn", Text: i18n.T("还没有节点，流量正在直连", "No nodes yet; traffic is going direct"), Action: "providers", Label: i18n.T("添加提供商", "Add Provider")}
+		is := &Issue{Level: "warn", Text: i18n.T("还没有节点，流量正在直连", "No nodes yet; traffic is going direct"), Action: "providers", Label: i18n.T("添加提供商", "Add Provider")}
+		if snap.External {
+			is.Action, is.Label = "", "" // its nodes are its own
+		}
+		return StateDegraded, is
 	}
 	if sw != nil && time.Since(sw.at) < 10*time.Minute {
 		return StateDegraded, &Issue{Level: "warn", Text: fmt.Sprintf(i18n.T("%s：%s 不可用，已换到 %s", "%s: %s is down, switched to %s"), routes.Title(a.route(sw.route)), sw.from, sw.to), Action: "activity", Label: i18n.T("查看", "View")}
@@ -1670,6 +1680,9 @@ func (a *App) judge(on bool, s settings.Settings, cs core.Status, tk Takeover, s
 		}
 	}
 	for _, p := range snap.Providers {
+		if snap.External {
+			break
+		}
 		switch p.Warn {
 		case "quota":
 			return StateDegraded, &Issue{Level: "warn", Text: fmt.Sprintf(i18n.T("%s 流量快用完了", "%s is almost out of data"), p.Name), Action: "providers", Label: i18n.T("查看", "View")}

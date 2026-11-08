@@ -174,6 +174,11 @@ func TestExternalCoreRoutesAndNodesAreItsOwn(t *testing.T) {
 			t.Errorf("%s: members %q picked %q, want %q %q", c.route, ms, r.Picked, c.members, c.picked)
 		}
 	}
+	// Attached and answering is the one light's "ok": the core is not ours
+	// to take over with, so there is no takeover to judge.
+	if s.State != StateOK || s.Issue != nil || !s.Takeover.On || s.Takeover.System.Status != "off" || s.Takeover.Tun.Status != "off" || s.Takeover.Gateway.Status != "off" {
+		t.Errorf("state %q, issue %+v, takeover %+v", s.State, s.Issue, s.Takeover)
+	}
 	var nodes []string
 	for _, n := range s.Nodes {
 		nodes = append(nodes, n.Name)
