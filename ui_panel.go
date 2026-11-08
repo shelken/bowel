@@ -84,8 +84,10 @@ func (u *UI) panelView(c *ui.Context) {
 		panelRule(c, p)
 		u.panelNodes(c, p)
 		panelRule(c, p)
-		u.panelMode(c, p)
-		panelRule(c, p)
+		if !u.snap.External { // its mode is its own
+			u.panelMode(c, p)
+			panelRule(c, p)
+		}
 		panelCmd(c, p, "open", i18n.T("打开 bowel", "Open bowel"), "⌘O").OnClick(func() { u.panelShow(nil) })
 		panelCmd(c, p, "quit", i18n.T("退出 bowel", "Quit bowel"), "⌘Q").OnClick(mygo.App.Quit)
 	})
@@ -105,11 +107,14 @@ func (u *UI) panelHead(c *ui.Context, p *pal) {
 		// the word shimmers.
 		starting := u.pending("takeover") || (s.Takeover.On && s.Core.State == "starting")
 		shimmer(disp(ui.Text(c, word), p).FontSize(21).FontWeight(700).LetterSpacing(-.3).TextColor(p.ink), starting, p)
-		if s.Takeover.On && s.Mode != "rule" {
+		if s.Takeover.On && s.Mode != "rule" && !s.External {
 			ui.Text(c, "· "+panelModeName(s.Mode)).FontSize(12).FontWeight(500).TextColor(p.mute)
 		}
 		ui.Spacer(c)
 		on := s.Takeover.On
+		if s.External { // there is nothing for bowel to take over
+			return
+		}
 		if ui.Switch(c.Key("takeover"), &on).Label(i18n.T("接管", "Takeover")).Disabled(u.pending("takeover")).Changed() {
 			u.do(func() error { return u.app.setTakeover(on) })
 		}
@@ -195,6 +200,8 @@ func (u *UI) panelNodes(c *ui.Context, p *pal) {
 			note = i18n.T("流量不经过 bowel", "Traffic isn’t going through bowel")
 		case s.Mode == "direct":
 			note = i18n.T("直连模式：不经过任何节点", "Direct mode: no node is used")
+		case len(s.Nodes) == 0 && s.External:
+			note = i18n.T("这个内核里还没有节点。", "The core has no nodes yet.")
 		case len(s.Nodes) == 0:
 			note = i18n.T("还没有节点 · 在 bowel 里添加提供商", "No nodes yet · Add a provider in bowel")
 		case r.ID == "" || r.Direct:

@@ -141,11 +141,13 @@ func (a *App) trayMenu(s Snapshot) *mygo.Menu {
 	if s.Issue != nil {
 		items = append(items, &mygo.MenuItem{Label: s.Issue.Text, Disabled: true})
 	}
-	items = append(items,
-		&mygo.MenuItem{Label: i18n.T("接管", "Takeover"), Type: mygo.MenuItemCheckbox, Checked: s.Takeover.On, Accelerator: "CmdOrCtrl+T",
-			Click: func(it *mygo.MenuItem, _ *mygo.Window) { on := it.Checked; go func() { a.logErr(a.setTakeover(on)) }() }},
-		mygo.Separator(),
-	)
+	if !s.External { // bowel takes over nothing of an external core
+		items = append(items,
+			&mygo.MenuItem{Label: i18n.T("接管", "Takeover"), Type: mygo.MenuItemCheckbox, Checked: s.Takeover.On, Accelerator: "CmdOrCtrl+T",
+				Click: func(it *mygo.MenuItem, _ *mygo.Window) { on := it.Checked; go func() { a.logErr(a.setTakeover(on)) }() }},
+			mygo.Separator(),
+		)
+	}
 
 	// One node list, the default exit's, as the panel has; the window has the routes.
 	for _, r := range s.Routes {
@@ -158,17 +160,23 @@ func (a *App) trayMenu(s Snapshot) *mygo.Menu {
 				label = fmt.Sprintf(i18n.T("节点", "Node")+"\t%s%s", flagOf(n), n.Display)
 			}
 		}
-		items = append(items, &mygo.MenuItem{Label: label, Submenu: a.routeMenu(r, s.Nodes),
+		nodes := s.Nodes
+		if s.External {
+			nodes = r.Members
+		}
+		items = append(items, &mygo.MenuItem{Label: label, Submenu: a.routeMenu(r, nodes, s.External),
 			Disabled: len(s.Nodes) == 0 || !s.Takeover.On || s.Mode == "direct"})
 	}
 	items = append(items, mygo.Separator())
-	for _, m := range [][2]string{{"rule", i18n.T("规则模式", "Rule mode")}, {"global", i18n.T("全局模式", "Global mode")}, {"direct", i18n.T("直连模式", "Direct mode")}} {
-		id := m[0]
-		items = append(items, &mygo.MenuItem{Label: m[1], Type: mygo.MenuItemRadio, Checked: s.Mode == id,
-			Click: func(*mygo.MenuItem, *mygo.Window) { go func() { a.logErr(a.setMode(id)) }() }})
+	if !s.External {
+		for _, m := range [][2]string{{"rule", i18n.T("规则模式", "Rule mode")}, {"global", i18n.T("全局模式", "Global mode")}, {"direct", i18n.T("直连模式", "Direct mode")}} {
+			id := m[0]
+			items = append(items, &mygo.MenuItem{Label: m[1], Type: mygo.MenuItemRadio, Checked: s.Mode == id,
+				Click: func(*mygo.MenuItem, *mygo.Window) { go func() { a.logErr(a.setMode(id)) }() }})
+		}
+		items = append(items, mygo.Separator())
 	}
 	items = append(items,
-		mygo.Separator(),
 		&mygo.MenuItem{Label: i18n.T("打开 bowel", "Open bowel"), Accelerator: "CmdOrCtrl+O", Click: func(*mygo.MenuItem, *mygo.Window) { a.showWindow() }},
 		&mygo.MenuItem{Label: i18n.T("设置…", "Settings…"), Accelerator: "CmdOrCtrl+,", Click: func(*mygo.MenuItem, *mygo.Window) {
 			if u := a.uiRef(); u != nil {
@@ -181,10 +189,14 @@ func (a *App) trayMenu(s Snapshot) *mygo.Menu {
 }
 
 // routeMenu lists automatic and the fastest nodes; the window has the rest.
-func (a *App) routeMenu(r RouteView, all []NodeView) []*mygo.MenuItem {
+// An external core's route has no Auto, and its members are its group's.
+func (a *App) routeMenu(r RouteView, all []NodeView, external bool) []*mygo.MenuItem {
 	rid := r.ID
-	items := []*mygo.MenuItem{{Label: i18n.T("自动（最快 + 故障转移）", "Auto (fastest + failover)"), Type: mygo.MenuItemRadio, Checked: r.Auto,
-		Click: func(*mygo.MenuItem, *mygo.Window) { go func() { a.logErr(a.selectNode(rid, "")) }() }}, mygo.Separator()}
+	var items []*mygo.MenuItem
+	if !external {
+		items = []*mygo.MenuItem{{Label: i18n.T("自动（最快 + 故障转移）", "Auto (fastest + failover)"), Type: mygo.MenuItemRadio, Checked: r.Auto,
+			Click: func(*mygo.MenuItem, *mygo.Window) { go func() { a.logErr(a.selectNode(rid, "")) }() }}, mygo.Separator()}
+	}
 	nodes := append([]NodeView(nil), all...)
 	sort.SliceStable(nodes, func(i, j int) bool { return rank(nodes[i]) < rank(nodes[j]) })
 	if len(nodes) > 15 {
@@ -199,7 +211,7 @@ func (a *App) routeMenu(r RouteView, all []NodeView) []*mygo.MenuItem {
 				d = fmt.Sprintf("%d ms", n.Delay)
 			}
 		}
-		items = append(items, &mygo.MenuItem{Label: flagOf(n) + n.Display + "\t" + d, Type: mygo.MenuItemRadio, Checked: !r.Auto && r.Node == name,
+		items = append(items, &mygo.MenuItem{Label: flagOf(n) + n.Display + "\t" + d, Type: mygo.MenuItemRadio, Checked: !r.Auto && (r.Node == name && !external || external && r.Picked == name),
 			Click: func(*mygo.MenuItem, *mygo.Window) { go func() { a.logErr(a.selectNode(rid, name)) }() }})
 	}
 	if len(all) > 15 {

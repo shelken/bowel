@@ -1,9 +1,11 @@
 package main
 
 import (
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 )
 
@@ -34,10 +36,22 @@ func TestExternalPanelListsMembers(t *testing.T) {
 	u := externalUI()
 	tt := panelTester(u, 640, false)
 	wantTexts(t, tt, "香港 02", "东京 01", "selfhost", "全部节点…", "3 个")
-	for _, s := range []string{"自动", "最快 + 故障转移", "香港 03 IPLC", "新加坡 01"} {
+	for _, s := range []string{"自动", "最快 + 故障转移", "香港 03 IPLC", "新加坡 01", "接管", "模式", "全局"} {
 		if tt.HasText(s) {
 			t.Errorf("the panel shows %q: %q", s, tt.Texts())
 		}
+	}
+}
+
+func TestExternalPanelWithoutNodes(t *testing.T) {
+	u := externalUI()
+	u.snap.Nodes = nil
+	for i := range u.snap.Routes {
+		u.snap.Routes[i].Members = nil
+	}
+	tt := panelTester(u, 640, false)
+	if tt.HasText("提供商") {
+		t.Errorf("the panel sends people to add a provider: %q", tt.Texts())
 	}
 }
 
@@ -76,6 +90,33 @@ func TestExternalBoardShowsTheCore(t *testing.T) {
 		tt.Advance(time.Second)
 		if u.home.x != "" {
 			t.Errorf("the %s cell opened", id)
+		}
+	}
+}
+
+// The tray menu of an external core has no takeover or mode to set, and
+// its node list is the route's own members.
+func TestExternalTrayMenu(t *testing.T) {
+	u := externalUI()
+	a := &App{}
+	var labels []string
+	var walk func(items []*mygo.MenuItem)
+	walk = func(items []*mygo.MenuItem) {
+		for _, it := range items {
+			labels = append(labels, it.Label)
+			walk(it.Submenu)
+		}
+	}
+	walk(a.trayMenu(u.snap).Items())
+	got := strings.Join(labels, "|")
+	for _, s := range []string{"接管", "规则模式", "全局模式", "自动（最快 + 故障转移）", "香港 03 IPLC"} {
+		if strings.Contains(got, s) {
+			t.Errorf("the menu has %q: %s", s, got)
+		}
+	}
+	for _, s := range []string{"香港 02", "selfhost"} {
+		if !strings.Contains(got, s) {
+			t.Errorf("the menu lacks %q: %s", s, got)
 		}
 	}
 }
