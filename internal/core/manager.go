@@ -129,7 +129,11 @@ func (m *Manager) newClient() *mihomo.Client {
 	if m.socket != "" {
 		return mihomo.NewUnix(m.socket)
 	}
-	return mihomo.NewTCP(m.tcpAddr, m.secret)
+	c := mihomo.NewTCP(m.tcpAddr, m.secret)
+	if m.external {
+		c.ReadOnly()
+	}
+	return c
 }
 
 // SetBin changes the executable the next start uses (the setuid copy that
