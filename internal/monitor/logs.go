@@ -3,6 +3,7 @@ package monitor
 import (
 	"net"
 	"net/netip"
+	"path"
 	"regexp"
 	"strconv"
 	"strings"
@@ -13,6 +14,7 @@ import (
 
 // dialFailure is what a failed-dial log line of mihomo says.
 type dialFailure struct {
+	ID      string // sing-box's id of the connection; mihomo's lines carry none
 	Network string // "tcp" / "udp"
 	Group   string // the proxy (usually the rule's target group) mihomo dialed through
 	Rule    string // rule type, e.g. "Domain"; empty in global/direct mode
@@ -37,8 +39,82 @@ type dialFailure struct {
 var dialFailRe = regexp.MustCompile(
 	`^\[(TCP|UDP)\] dial (.+?) (?:\(match ([^/()]*)/(.*?)\) )?(\[[^\]]*\]:\d+|[^\s()]+)(?:\((.*?)\))? --> (\S+) error: (.*)$`)
 
+// sing-box logs a failed dial, at level error, as
+//
+//	[3066431264 5.0s] connection: open connection to example.org:443 using outbound/shadowsocks[node]: dial tcp 192.0.2.1:443: i/o timeout
+//	[3066431265 1.0s] connection: open packet connection to 192.0.2.9:53 using outbound/direct[direct]: refused
+//	[3066431266 0ms] connection: listen packet connection using outbound/vless[node]: closed
+//
+// with a list of addresses in place of host:port once the name has been
+// resolved. It names the outbound that was dialed, not the rule's group,
+// and neither the client nor the process: those are in the other lines of
+// the connection, which carry the same id.
+var sbDialFailRe = regexp.MustCompile(
+	`^(?:\[(\d+) [^\]]*\] )?(?:connection: )?(open connection to|open packet connection to|listen packet connection)(?: (\S+))?(?: using outbound/[^\[\s]+\[(.*?)\])?: (.*)$`)
+
+func parseSingBoxFailure(text string) (dialFailure, bool) {
+	g := sbDialFailRe.FindStringSubmatch(text)
+	if g == nil {
+		return dialFailure{}, false
+	}
+	f := dialFailure{ID: g[1], Network: "tcp", Group: g[4], Error: g[5]}
+	if g[2] != "open connection to" {
+		f.Network = "udp"
+	}
+	if h, p, err := net.SplitHostPort(g[3]); err == nil {
+		f.Host = h
+		f.Port, _ = strconv.Atoi(p)
+	} else {
+		f.Host, _, _ = strings.Cut(strings.Trim(g[3], "[]"), ",")
+	}
+	return f, true
+}
+
+// sbConn is what the lines of one sing-box connection told, before it failed.
+type sbConn struct {
+	Source string // the client's ip:port
+	Path   string // the client's process
+}
+
+var (
+	sbIDRe     = regexp.MustCompile(`^\[(\d+) [^\]]*\] (.*)$`)
+	sbSourceRe = regexp.MustCompile(`: inbound (?:packet )?connection from (\S+)$`)
+	sbPathRe   = regexp.MustCompile(`^router: found process path: (.*), user: [^,]*$`)
+)
+
+// noteSingBoxConn keeps what a line says of the client of its connection.
+func (m *Monitor) noteSingBoxConn(text string) {
+	g := sbIDRe.FindStringSubmatch(text)
+	if g == nil {
+		return
+	}
+	var c sbConn
+	if s := sbSourceRe.FindStringSubmatch(g[2]); s != nil {
+		c.Source = s[1]
+	} else if p := sbPathRe.FindStringSubmatch(g[2]); p != nil {
+		c.Path = p[1]
+	} else {
+		return
+	}
+	if len(m.sbConns) >= 4096 { // a connection that failed did so within seconds
+		clear(m.sbConns)
+	}
+	old := m.sbConns[g[1]]
+	if c.Source == "" {
+		c.Source = old.Source
+	}
+	if c.Path == "" {
+		c.Path = old.Path
+	}
+	m.sbConns[g[1]] = c
+}
+
 func parseDialFailure(text string) (dialFailure, bool) {
-	g := dialFailRe.FindStringSubmatch(strings.TrimSpace(text))
+	text = strings.TrimSpace(text)
+	if f, ok := parseSingBoxFailure(text); ok {
+		return f, true
+	}
+	g := dialFailRe.FindStringSubmatch(text)
 	if g == nil {
 		return dialFailure{}, false
 	}
@@ -72,12 +148,22 @@ func (m *Monitor) addLog(l mihomo.Log, now time.Time) {
 	m.seq++
 	m.logs = push(m.logs, Log{Seq: m.seq, Time: now, Level: l.Type, Text: l.Payload}, maxLogs)
 
+	if l.Type == "info" {
+		m.noteSingBoxConn(l.Payload)
+	}
 	if l.Type != "warning" && l.Type != "error" {
 		return
 	}
 	f, ok := parseDialFailure(l.Payload)
 	if !ok || (m.SkipGroup != "" && f.Group == m.SkipGroup) {
 		return
+	}
+	if sb, known := m.sbConns[f.ID]; f.ID != "" && known {
+		f.Source = sb.Source
+		if sb.Path != "" {
+			f.Process = path.Base(sb.Path)
+			m.paths[f.Process] = sb.Path
+		}
 	}
 	// mihomo retries a TCP dial several times within a few seconds, each
 	// logged alike; the client's source port tells one dial from another.
@@ -86,7 +172,7 @@ func (m *Monitor) addLog(l mihomo.Log, now time.Time) {
 			delete(m.recentFail, k)
 		}
 	}
-	key := f.Network + "|" + f.Source + "|" + f.Host + ":" + strconv.Itoa(f.Port) + "|" + f.Group
+	key := f.ID + "|" + f.Network + "|" + f.Source + "|" + f.Host + ":" + strconv.Itoa(f.Port) + "|" + f.Group
 	if _, dup := m.recentFail[key]; dup {
 		m.recentFail[key] = now
 		return
