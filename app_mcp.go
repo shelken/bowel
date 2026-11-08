@@ -530,6 +530,9 @@ func (a *App) mcpServer() *mcp.Server {
 		routeIDs[i] = r.ID
 	}
 	routeArg := str("A route's id: "+strings.Join(routeIDs, ", ")+".", routeIDs...)
+	if len(routeIDs) == 0 { // an external core's routes are not known yet
+		routeArg = str("A route's id, as list_routes gives it.")
+	}
 	return &mcp.Server{
 		Name: "bowel", Title: "bowel", Version: mygo.App.Version(),
 		Instructions: mcpInstructions,

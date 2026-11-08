@@ -156,3 +156,27 @@ func TestExternalCoreRoutesAndNodesAreItsOwn(t *testing.T) {
 		t.Errorf("nodes %q, want %q", got, want)
 	}
 }
+
+// An external core's routes are found after the server is built, so the
+// tools cannot list them: they must say where to look instead of listing
+// nothing.
+func TestExternalCoreMCPToolsDoNotListNoRoutes(t *testing.T) {
+	a, _ := externalApp(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/version":
+			io.WriteString(w, `{"version":"sing-box 1.14.4"}`)
+		case "/proxies":
+			io.WriteString(w, `{"proxies":{"GLOBAL":{"name":"GLOBAL","type":"Fallback","now":"proxy","all":["proxy"]}}}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	for _, tool := range a.mcpServer().Tools {
+		props, _ := tool.Input["properties"].(map[string]any)
+		if route, ok := props["route"].(map[string]any); ok {
+			if d, _ := route["description"].(string); strings.Contains(d, ": .") || !strings.Contains(d, "list_routes") {
+				t.Errorf("%s: route is described as %q", tool.Name, d)
+			}
+		}
+	}
+}
