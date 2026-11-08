@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/oboo/moho/internal/mihomo"
 )
@@ -20,9 +21,19 @@ type observedCore struct {
 	trace  *httptest.Server
 	client *mihomo.Client
 
+	// before gives other connections the core lists ahead of the trace's,
+	// as JSON objects, given the trace's source and destination ports.
+	before func(port, dport string) []string
+
 	mu   sync.Mutex
 	port string
 	open bool
+}
+
+// conn is a connection the core lists, as JSON.
+func conn(chain, network, sourcePort, destPort string, start time.Time) string {
+	return fmt.Sprintf(`{"id":"x","start":%q,"chains":%s,"rule":"final","metadata":{"network":%q,"sourcePort":%q,"destinationPort":%q}}`,
+		start.Format(time.RFC3339Nano), chain, network, sourcePort, destPort)
 }
 
 func newObservedCore(t *testing.T, chain, proxies string) *observedCore {
@@ -54,7 +65,13 @@ func newObservedCore(t *testing.T, chain, proxies string) *observedCore {
 				io.WriteString(w, `{"connections":[]}`)
 				return
 			}
-			fmt.Fprintf(w, `{"connections":[{"id":"x","chains":%s,"rule":"final","metadata":{"sourcePort":%q}}]}`, chain, o.port)
+			_, dport, _ := net.SplitHostPort(o.trace.Listener.Addr().String())
+			var all []string
+			if o.before != nil {
+				all = o.before(o.port, dport)
+			}
+			all = append(all, conn(chain, "tcp", o.port, dport, time.Now()))
+			fmt.Fprintf(w, `{"connections":[%s]}`, strings.Join(all, ","))
 		case "/proxies":
 			io.WriteString(w, proxies)
 		default:
@@ -70,7 +87,8 @@ const observedProxies = `{"proxies":{
 	"main":{"name":"main","type":"Selector","now":"pool","all":["pool","direct"]},
 	"pool":{"name":"pool","type":"URLTest","now":"n1","all":["n1"]},
 	"direct":{"name":"direct","type":"Direct"},
-	"n1":{"name":"n1","type":"Shadowsocks"}}}`
+	"n1":{"name":"n1","type":"Shadowsocks"},
+	"n2":{"name":"n2","type":"Shadowsocks"}}}`
 
 // The node a request went through is the first non-group of its chain; its
 // exit is what the trace says, kept under that node's name.
@@ -114,5 +132,39 @@ func TestObserveDoesNotCreditADirectExit(t *testing.T) {
 	}
 	if l.Fresh("direct") {
 		t.Error("direct was kept")
+	}
+}
+
+// Another connection can have the same source port: a UDP socket, or one
+// from another host behind the gateway. The trace's own is the TCP one to
+// the trace's port, made after the request began.
+func TestObserveIgnoresOtherConnectionsOnTheSamePort(t *testing.T) {
+	o := newObservedCore(t, `["n1","pool","main"]`, observedProxies)
+	o.before = func(port, dport string) []string {
+		return []string{
+			conn(`["n2","main"]`, "udp", port, dport, time.Now()),
+			conn(`["n2","main"]`, "tcp", port, "443", time.Now()),
+			conn(`["n2","main"]`, "tcp", port, dport, time.Now().Add(-time.Minute)),
+		}
+	}
+	node, _, err := New("").Observe(t.Context(), o.client, o.trace.URL)
+	if err != nil || node != "n1" {
+		t.Fatalf("observed %q, %v; want n1", node, err)
+	}
+}
+
+// Two connections that both look like the trace's say nothing: guessing
+// would credit a node that may not have carried it.
+func TestObserveWithTwoCandidatesSaysNothing(t *testing.T) {
+	o := newObservedCore(t, `["n1","pool","main"]`, observedProxies)
+	o.before = func(port, dport string) []string {
+		return []string{conn(`["n2","main"]`, "tcp", port, dport, time.Now())}
+	}
+	l := New("")
+	if node, r, err := l.Observe(t.Context(), o.client, o.trace.URL); err == nil {
+		t.Fatalf("observed %q %+v", node, r)
+	}
+	if l.Fresh("n1") || l.Fresh("n2") {
+		t.Error("something was kept")
 	}
 }

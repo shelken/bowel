@@ -602,7 +602,9 @@ func TestExternalCoreLocatesTheDefaultRoutesExit(t *testing.T) {
 				io.WriteString(w, `{"connections":[]}`)
 				return
 			}
-			fmt.Fprintf(w, `{"connections":[{"id":"c1","chains":["relay-7","main"],"rule":"final","metadata":{"sourcePort":%q}}]}`, port)
+			_, dport, _ := net.SplitHostPort(trace.Listener.Addr().String())
+			fmt.Fprintf(w, `{"connections":[{"id":"c1","start":%q,"chains":["relay-7","main"],"rule":"final","metadata":{"network":"tcp","sourcePort":%q,"destinationPort":%q}}]}`,
+				time.Now().Format(time.RFC3339Nano), port, dport)
 		default:
 			http.NotFound(w, r)
 		}

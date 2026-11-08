@@ -7,8 +7,10 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"sync/atomic"
+	"time"
 
 	"github.com/oboo/moho/internal/mihomo"
 )
@@ -17,7 +19,7 @@ import (
 // traffic through, for a core whose config bowel cannot extend with a probe
 // listener. It requests the trace at target and, while that connection is
 // still open, finds it in the core's connection list by the port it was made
-// from. The node is the first proxy of the connection's chain that is not a
+// from, its network and destination, and when it began. The node is the first proxy of the connection's chain that is not a
 // group, and the trace's answer is kept under its name.
 //
 // A request the core never saw (nothing routes bowel's traffic into it) is
@@ -49,6 +51,7 @@ func (l *Locator) Observe(ctx context.Context, c *mihomo.Client, target string) 
 	// Closing the idle connection is what ends it: it must stay open while
 	// the core's list is read.
 	defer tr.CloseIdleConnections()
+	began := time.Now()
 	body, err := fetch(ctx, &http.Client{Timeout: probeTimeout, Transport: tr}, target)
 	if err != nil {
 		return unknown(err)
@@ -61,12 +64,29 @@ func (l *Locator) Observe(ctx context.Context, c *mihomo.Client, target string) 
 	if err != nil {
 		return unknown(err)
 	}
-	var chain []string
-	for _, cn := range snap.Connections {
-		if cn.Metadata.SourcePort == strconv.FormatInt(port.Load(), 10) {
-			chain = cn.Chains
-			break
+	// The source port alone can match a UDP socket, or a connection from
+	// another host behind the gateway: the request is the TCP connection
+	// to the trace's port that began after it was sent.
+	dport := ""
+	if u, err := url.Parse(target); err == nil {
+		dport = u.Port()
+		if dport == "" && u.Scheme == "https" {
+			dport = "443"
+		} else if dport == "" {
+			dport = "80"
 		}
+	}
+	var chain []string
+	found := 0
+	for _, cn := range snap.Connections {
+		m := cn.Metadata
+		if m.SourcePort == strconv.FormatInt(port.Load(), 10) && m.Network == "tcp" && m.DestinationPort == dport && !cn.Start.Before(began) {
+			chain = cn.Chains
+			found++
+		}
+	}
+	if found > 1 {
+		return unknown(errors.New("more than one connection could be the trace request"))
 	}
 	if len(chain) == 0 {
 		return unknown(errors.New("the core did not carry the trace request"))
