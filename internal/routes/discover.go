@@ -44,6 +44,9 @@ func Discover(px map[string]mihomo.Proxy, rules []mihomo.Rule) Table {
 					direct = len(t) - 1
 				}
 				at[name] = direct
+				if !slices.Contains(t[direct].Outs, name) {
+					t[direct].Outs = append(t[direct].Outs, name)
+				}
 				t[direct].Rules = append(t[direct].Rules, rl.Payload)
 				continue
 			default:

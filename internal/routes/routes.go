@@ -4,6 +4,8 @@
 package routes
 
 import (
+	"slices"
+
 	"github.com/oboo/moho/internal/i18n"
 	"github.com/oboo/moho/internal/mihomo"
 )
@@ -23,6 +25,9 @@ type Route struct {
 	// neither.
 	Group string `json:"-"`
 	Auto  string `json:"-"`
+	// Outs are the names an external core gives the Direct outbounds this
+	// route stands for.
+	Outs []string `json:"-"`
 }
 
 // Table is the routes in the order they are shown.
@@ -50,9 +55,9 @@ func (t Table) OfChain(group, rule string) string {
 			return r.ID
 		}
 	}
-	if group == "DIRECT" && rule != "" && rule != "Match" {
+	if rule != "" && rule != "Match" {
 		for _, r := range t {
-			if r.Direct {
+			if r.Direct && (group == "DIRECT" || slices.Contains(r.Outs, group)) {
 				return r.ID
 			}
 		}

@@ -184,6 +184,30 @@ func join(ss []string) string {
 	return out
 }
 
+// A Direct outbound may be named anything: traffic that left through one
+// the rules chose belongs to the direct route, as DIRECT's does.
+func TestDiscoveredDirectOutboundsOwnTheirTraffic(t *testing.T) {
+	px := map[string]mihomo.Proxy{
+		"GLOBAL":  {Type: "Fallback", Now: "main"},
+		"main":    group("n1", "n1"),
+		"lan-out": {Type: "Direct"},
+		"v6-out":  {Type: "Direct"},
+		"stray":   {Type: "Direct"},
+		"n1":      {Type: "Shadowsocks"},
+	}
+	tb := Discover(px, []mihomo.Rule{rule("route(lan-out)", "a"), rule("route(v6-out)", "b")})
+	for _, c := range []struct{ group, rule, want string }{
+		{"lan-out", "default", "direct"},
+		{"v6-out", "default", "direct"},
+		{"stray", "default", ""}, // no rule sends traffic there
+		{"main", "default", "default"},
+	} {
+		if got := tb.OfChain(c.group, c.rule); got != c.want {
+			t.Errorf("OfChain(%q, %q) = %q, want %q", c.group, c.rule, got, c.want)
+		}
+	}
+}
+
 // The English of a title or a summary belongs to the template's Chinese
 // text, not to a route's id: a core's own route may be called "media" or
 // "direct" and say nothing about streaming or the mainland.
