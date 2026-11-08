@@ -799,7 +799,7 @@ func (u *UI) coreSource(c *ui.Context, p *pal, s settings.Settings) {
 	optRow(c, p, i18n.T("密钥", "Secret"), i18n.T("控制器要求时填写，没有就留空", "If the controller asks for one; empty if not"), func() {
 		u.optText(c, p, "coresecret", i18n.T("密钥", "Secret"), s.CoreSecret, 180, func(v string) {
 			u.setOpt(func(s *settings.Settings) { s.CoreSecret = v })
-		})
+		}).Password()
 	})
 }
 
