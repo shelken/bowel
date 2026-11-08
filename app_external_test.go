@@ -223,6 +223,52 @@ func TestExternalCoreRoutesAndNodesAreItsOwn(t *testing.T) {
 	}
 }
 
+// The mode and the user rules in the settings are the built-in core's. An
+// external core has its own, and bowel's interface has no control to change
+// them back, so a mode or a rule left from before must not show.
+func TestExternalCoreIgnoresBuiltInModeAndRules(t *testing.T) {
+	a, _ := externalApp(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/version":
+			io.WriteString(w, `{"version":"sing-box 1.14.4"}`)
+		case "/proxies":
+			io.WriteString(w, `{"proxies":{
+				"GLOBAL":{"name":"GLOBAL","type":"Fallback","now":"main","all":["main"]},
+				"main":{"name":"main","type":"Selector","now":"n1","all":["n1"]},
+				"video":{"name":"video","type":"Selector","now":"n1","all":["n1"]},
+				"n1":{"name":"n1","type":"Shadowsocks"}}}`)
+		case "/rules":
+			io.WriteString(w, `{"rules":[{"type":"default","payload":"domain=a.example","proxy":"route(video)"}]}`)
+		case "/providers/proxies":
+			io.WriteString(w, `{"providers":{}}`)
+		case "/connections":
+			io.WriteString(w, `{"connections":[]}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	if _, err := a.settings.Update(func(s *settings.Settings) {
+		s.Mode = "direct"
+		s.Rules = []routes.UserRule{{Kind: routes.KindSuffix, Value: "x.example", Route: "video"}}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	a.refresh()
+
+	s := a.snapshot()
+	if s.Mode != "rule" {
+		t.Errorf("mode %q, want rule", s.Mode)
+	}
+	for _, r := range s.Routes {
+		if r.Mine != 0 {
+			t.Errorf("route %s counts %d of the built-in core's user rules", r.ID, r.Mine)
+		}
+	}
+	if want := routes.Count(a.routeTable()); s.RuleCount != want {
+		t.Errorf("rule count %d, want the core's %d", s.RuleCount, want)
+	}
+}
+
 // An external core's routes are found after the server is built, so the
 // tools cannot list them: they must say where to look instead of listing
 // nothing.

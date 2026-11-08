@@ -1614,6 +1614,11 @@ func isDirect(px map[string]mihomo.Proxy, node string) bool {
 
 func (a *App) snapshot() Snapshot {
 	s := a.settings.Get()
+	if a.core.External() {
+		// The mode and the rules are the built-in core's; bowel neither
+		// shows nor changes an external core's.
+		s.Mode, s.Rules = "rule", nil
+	}
 	cs := a.core.Status()
 	a.mu.Lock()
 	sys, px, provNodes, you, sw := a.sys, a.proxies, a.provNodes, a.you, a.switched
