@@ -67,6 +67,10 @@ func TestGuess(t *testing.T) {
 	if r := l.Guess("stale", "🇯🇵 日本 01"); r.Source != SourceName || r.Place == nil || r.Place.Country != "JP" {
 		t.Errorf("stale probe → name: %+v", r)
 	}
+	// A node whose name says nothing keeps the place it was measured at.
+	if r := l.Guess("stale", "Relay-7 专线"); r.Source != SourceProbe || r.Place == nil || r.Place.Country != "HK" {
+		t.Errorf("stale probe, no name: %+v", r)
+	}
 	if r := l.Guess("noplace", "US Los Angeles"); r.Source != SourceName || r.Place == nil || r.Place.Country != "US" {
 		t.Errorf("probe without place → name: %+v", r)
 	}

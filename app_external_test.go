@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -63,6 +64,7 @@ func externalApp(t *testing.T, h http.Handler) (*App, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	a.traceURL = "" // a test must not ask the internet where it is
 	if err := a.startCore(); err != nil {
 		t.Fatalf("startCore: %v", err)
 	}
@@ -478,4 +480,94 @@ func TestExternalRoutesAreChoicesOfTheTools(t *testing.T) {
 		return
 	}
 	t.Fatal("no select_node")
+}
+
+// An external core has no probe group to point at a node, so where its
+// nodes exit is learned from bowel's own request: the node that carried it
+// gets the place the trace names. A node measured lately is not measured
+// again, and nothing of the core is changed.
+func TestExternalCoreLocatesTheDefaultRoutesExit(t *testing.T) {
+	var mu sync.Mutex
+	var port string
+	var open bool
+	var traces int
+	trace := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		traces++
+		mu.Unlock()
+		io.WriteString(w, "ip=203.0.113.7\ncolo=NRT\nloc=JP\n")
+	}))
+	trace.Config.ConnState = func(c net.Conn, s http.ConnState) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch s {
+		case http.StateNew:
+			_, port, _ = net.SplitHostPort(c.RemoteAddr().String())
+			open = true
+		case http.StateClosed, http.StateHijacked:
+			open = false
+		}
+	}
+	trace.Start()
+	defer trace.Close()
+
+	a, _ := externalApp(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Errorf("the external core was changed: %s %s", r.Method, r.URL.Path)
+		}
+		switch r.URL.Path {
+		case "/version":
+			io.WriteString(w, `{"version":"sing-box 1.14.4"}`)
+		case "/proxies":
+			io.WriteString(w, `{"proxies":{"GLOBAL":{"name":"GLOBAL","type":"Fallback","now":"main","all":["main"]},
+				"main":{"name":"main","type":"Selector","now":"relay-7","all":["relay-7"]},"relay-7":{"name":"relay-7","type":"Shadowsocks"}}}`)
+		case "/rules":
+			io.WriteString(w, `{"rules":[]}`)
+		case "/providers/proxies":
+			io.WriteString(w, `{"providers":{}}`)
+		case "/connections":
+			mu.Lock()
+			defer mu.Unlock()
+			if !open {
+				io.WriteString(w, `{"connections":[]}`)
+				return
+			}
+			fmt.Fprintf(w, `{"connections":[{"id":"c1","chains":["relay-7","main"],"rule":"final","metadata":{"sourcePort":%q}}]}`, port)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	a.refresh()
+	where := func() Located {
+		for _, n := range a.snapshot().Nodes {
+			if n.Name == "relay-7" {
+				return n.Where
+			}
+		}
+		t.Fatal("no node relay-7")
+		return Located{}
+	}
+
+	// Without a trace page there is nothing to ask.
+	a.mu.Lock()
+	a.traceURL = ""
+	a.mu.Unlock()
+	a.locateExits(false)
+	if w := where(); w.Source != "unknown" {
+		t.Fatalf("before: %+v", w)
+	}
+
+	a.mu.Lock()
+	a.traceURL = trace.URL
+	a.mu.Unlock()
+	a.locateExits(false)
+	if w := where(); w.Source != "probe" || w.Place == nil || w.Place.Country != "JP" {
+		t.Fatalf("after: %+v", w)
+	}
+	a.locateExits(false)
+	mu.Lock()
+	defer mu.Unlock()
+	if traces != 1 {
+		t.Errorf("%d traces, want 1: a recent measurement is enough", traces)
+	}
 }

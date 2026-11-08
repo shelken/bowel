@@ -53,6 +53,10 @@ type App struct {
 	core      *core.Manager
 	mon       *monitor.Monitor
 	loc       *locate.Locator
+	// traceURL is the page an external core's exits are read from; empty
+	// turns that off. observeAt is when each node was last tried.
+	traceURL  string
+	observeAt map[string]time.Time
 	http      *http.Client
 	coreBin   string // the bundled core
 	tunBin    string // the setuid copy TUN runs
@@ -136,8 +140,9 @@ func newApp() (*App, error) {
 	}
 	a := &App{
 		dataDir: data, settings: st, providers: ps, routes: routes.Template(), core: cm,
-		mon:  monitor.New(filepath.Join(data, "stats.json")),
-		loc:  locate.New(filepath.Join(data, "locations.json")),
+		mon:      monitor.New(filepath.Join(data, "stats.json")),
+		loc:      locate.New(filepath.Join(data, "locations.json")),
+		traceURL: locate.TraceURL, observeAt: map[string]time.Time{},
 		http: &http.Client{Transport: netproxy.Transport()}, coreBin: bin, tunBin: tunBin, probePort: probe,
 		pending: map[string]bool{}, locating: map[string]bool{}, proxies: map[string]mihomo.Proxy{},
 		provNodes: map[string][]string{}, lastNode: map[string]string{}, routeBytes: map[string]int64{},
@@ -392,6 +397,7 @@ func (a *App) loop() {
 		select {
 		case <-fast.C:
 			a.refresh()
+			go a.observeExit() // a node that came up since: URLTest moves by itself
 		case <-slow.C:
 			a.autoUpdate()
 			a.locateExits(false)
@@ -1019,7 +1025,7 @@ func (a *App) probe(node string) {
 	if a.core.External() {
 		return
 	}
-	if r := a.loc.Guess(node, display(node)); r.Source == "probe" {
+	if a.loc.Fresh(node) {
 		return
 	}
 	if _, err := a.probeErr(context.Background(), node); err != nil {
@@ -1051,8 +1057,63 @@ func (a *App) probeErr(ctx context.Context, node string) (locate.Result, error) 
 	return r, err
 }
 
+// observeCooldown is how long a node that could not be measured is left
+// alone: the loop asks every 2 s.
+const observeCooldown = 5 * time.Minute
+
+// observeExit measures where the node that carries the default route exits,
+// unless a recent measurement says. An external core has no probe group to
+// point at a node, so bowel measures what it can see: its own request, and
+// the node the core sent it through.
+func (a *App) observeExit() {
+	if !a.core.External() {
+		return
+	}
+	a.mu.Lock()
+	target, px := a.traceURL, a.proxies
+	a.mu.Unlock()
+	if target == "" {
+		return
+	}
+	node := ""
+	for _, r := range a.routeTable() {
+		if r.ID == "default" {
+			node, _ = r.Current(px)
+		}
+	}
+	if node == "" || a.loc.Fresh(node) {
+		return
+	}
+	a.mu.Lock()
+	if time.Since(a.observeAt[node]) < observeCooldown {
+		a.mu.Unlock()
+		return
+	}
+	a.observeAt[node] = time.Now()
+	a.locating[node] = true
+	a.mu.Unlock()
+	a.emit()
+	err := errors.New("core is not running")
+	if c, cerr := a.core.Client(); cerr == nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		_, _, err = a.loc.Observe(ctx, c, target)
+		cancel()
+	}
+	a.mu.Lock()
+	delete(a.locating, node)
+	a.mu.Unlock()
+	a.emit()
+	if err != nil {
+		log.Println("locate:", err)
+	}
+}
+
 // locateExits measures the user's own place and the nodes routes use now.
 func (a *App) locateExits(force bool) {
+	if a.core.External() {
+		a.observeExit()
+		return
+	}
 	if force || a.you == nil {
 		_, _ = a.probeErr(context.Background(), "DIRECT")
 	}
