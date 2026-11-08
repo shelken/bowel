@@ -782,6 +782,11 @@ func (u *UI) coreSource(c *ui.Context, p *pal, s settings.Settings) {
 			})
 		}
 	})
+	if u.snap.RestartNeeded {
+		optRow(c, p, i18n.T("重启 bowel", "Restart bowel"), i18n.T("换了内核来源或控制器，重启后才会用上", "The core or controller you chose is used after a restart"), func() {
+			btn(c.Key("relaunch"), p, i18n.T("立即重启", "Restart now")).OnClick(mygo.App.Relaunch)
+		})
+	}
 	if s.CoreSource != "external" {
 		return
 	}

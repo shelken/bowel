@@ -59,6 +59,7 @@ type App struct {
 	probePort int
 	gw        *gateway.Gateway
 
+	boot  coreChoice // the core this run drives, as chosen when it started
 	setMu sync.Mutex // serialises updateSettings
 	// openAtLogin is whether Moho is a login item, as last read.
 	openAtLogin bool
@@ -142,6 +143,7 @@ func newApp() (*App, error) {
 		provNodes: map[string][]string{}, lastNode: map[string]string{}, routeBytes: map[string]int64{},
 		gw: gateway.New(osGateway(), filepath.Join(data, "gateway-before.json")),
 	}
+	a.boot = coreChoiceOf(s)
 	if cm.External() {
 		a.routes = nil
 	}
@@ -152,6 +154,20 @@ func newApp() (*App, error) {
 	cm.OnStatus = func(s core.Status) { a.onCoreStatus(s) }
 	a.mon.OnTick(a.onTick)
 	return a, nil
+}
+
+// coreChoice is which core bowel drives and where to reach it; it is read
+// when bowel starts.
+type coreChoice struct {
+	external     bool
+	addr, secret string
+}
+
+func coreChoiceOf(s settings.Settings) coreChoice {
+	if s.CoreSource != "external" {
+		return coreChoice{}
+	}
+	return coreChoice{true, s.CoreAddr, s.CoreSecret}
 }
 
 // bundledCore finds mihomo: $MOHO_CORE, else bin/mihomo among the resources.
@@ -1553,6 +1569,8 @@ func (a *App) snapshot() Snapshot {
 		Nodes:         []NodeView{},
 		Providers:     []ProviderView{},
 		External:      a.core.External(),
+
+		RestartNeeded: coreChoiceOf(s) != a.boot,
 	}
 
 	// Takeover, as it really is. An external core is not taken over by bowel: attached and answering is

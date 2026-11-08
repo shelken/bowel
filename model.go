@@ -31,6 +31,8 @@ type Snapshot struct {
 	Core  Core   `json:"core"`
 	// External: the core is someone else's, with its own routes and nodes.
 	External bool `json:"external"`
+	// RestartNeeded: the saved choice of core is not the one running.
+	RestartNeeded bool `json:"restartNeeded"`
 	// Mode is "rule", "global" or "direct".
 	Mode      string         `json:"mode"`
 	Takeover  Takeover       `json:"takeover"`

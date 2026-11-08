@@ -371,3 +371,44 @@ func TestTickWithTrafficDoesNotHang(t *testing.T) {
 		t.Fatal("buildTick hangs")
 	}
 }
+
+// The core to drive is read at the start, so a saved choice that is not
+// the running one waits for a restart, and the window offers it.
+func TestChoosingAnotherCoreNeedsARestart(t *testing.T) {
+	a, _ := externalApp(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/version":
+			io.WriteString(w, `{"version":"sing-box 1.14.4"}`)
+		case "/proxies":
+			io.WriteString(w, `{"proxies":{"GLOBAL":{"name":"GLOBAL","type":"Fallback","now":"main","all":["main"]},
+				"main":{"name":"main","type":"Selector","now":"n1","all":["n1"]},"n1":{"name":"n1","type":"Shadowsocks"}}}`)
+		case "/rules":
+			io.WriteString(w, `{"rules":[]}`)
+		default:
+			w.WriteHeader(http.StatusNoContent)
+		}
+	}))
+	if a.snapshot().RestartNeeded {
+		t.Fatal("a restart is asked for before anything changed")
+	}
+	run := a.settings.Get()
+	for name, change := range map[string]func(*settings.Settings){
+		"built-in":  func(s *settings.Settings) { s.CoreSource, s.CoreAddr = "", "" },
+		"address":   func(s *settings.Settings) { s.CoreAddr = "127.0.0.1:19090" },
+		"secret":    func(s *settings.Settings) { s.CoreSecret = "s" },
+		"same core": func(s *settings.Settings) { s.CoreAddr = run.CoreAddr },
+	} {
+		if err := a.updateSettings(change); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if got, want := a.snapshot().RestartNeeded, name != "same core"; got != want {
+			t.Errorf("%s: RestartNeeded %v, want %v", name, got, want)
+		}
+		if err := a.updateSettings(func(s *settings.Settings) { *s = run }); err != nil {
+			t.Fatal(err)
+		}
+		if a.snapshot().RestartNeeded {
+			t.Errorf("%s: a restart is asked for after the choice went back", name)
+		}
+	}
+}

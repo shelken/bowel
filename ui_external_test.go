@@ -183,6 +183,25 @@ func TestExternalAboutHasNoConfig(t *testing.T) {
 	}
 }
 
+// A saved core choice that is not the running one comes into effect at the
+// next start; the core page says so and offers to restart.
+func TestCorePageOffersARestart(t *testing.T) {
+	for _, need := range []bool{false, true} {
+		u := externalUI()
+		u.snap.Settings = settings.Defaults.Clone()
+		u.snap.RestartNeeded = need
+		tt := ui.NewTesterWith(u.settingsView, 760, 560, ui.TesterOptions{})
+		tt.Advance(time.Second)
+		if err := tt.Click("内核"); err != nil {
+			t.Fatal(err)
+		}
+		tt.Frame()
+		if got := hasTextPart(tt, "立即重启"); got != need {
+			t.Errorf("RestartNeeded %v: restart offered %v: %q", need, got, tt.Texts())
+		}
+	}
+}
+
 // An external core's connections can be read, not changed: no button
 // closes one, and no menu writes a rule for it.
 func TestExternalActivityOnlyReads(t *testing.T) {
