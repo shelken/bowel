@@ -214,22 +214,25 @@ func (u *UI) panelNodeList(c *ui.Context, p *pal, r RouteView) {
 			u.do(func() error { return u.app.selectNode(r.ID, node) })
 		}
 	}
-	panelNodeRow(c, p, "auto", r.Auto, func() {
-		ui.Text(c, i18n.T("自动", "Auto")).FontSize(12.5).FontWeight(600).TextColor(p.ink)
-		ui.Text(c, i18n.T("最快 + 故障转移", "Fastest + failover")).FontSize(11).TextColor(p.mute).Grow(1)
-	}).OnClick(func() {
-		if !r.Auto {
-			choose("")
-		}
-	})
-	nodes := append([]NodeView(nil), u.snap.Nodes...)
+	if !u.snap.External {
+		panelNodeRow(c, p, "auto", r.Auto, func() {
+			ui.Text(c, i18n.T("自动", "Auto")).FontSize(12.5).FontWeight(600).TextColor(p.ink)
+			ui.Text(c, i18n.T("最快 + 故障转移", "Fastest + failover")).FontSize(11).TextColor(p.mute).Grow(1)
+		}).OnClick(func() {
+			if !r.Auto {
+				choose("")
+			}
+		})
+	}
+	pickable := u.pickable(r)
+	nodes := append([]NodeView(nil), pickable...)
 	sort.SliceStable(nodes, func(i, j int) bool { return rankOf(nodes[i]) < rankOf(nodes[j]) })
 	if len(nodes) > panelNodes {
 		nodes = nodes[:panelNodes]
 	}
 	for _, n := range nodes {
 		name := n.Name
-		chosen := !r.Auto && r.Node == name
+		chosen := !r.Auto && u.picked(r, n)
 		panelNodeRow(c, p, name, chosen, func() {
 			flagged(c, p, n, 12.5, func() {
 				ui.Text(c, n.Display).FontSize(12.5).TextColor(p.ink).MaxLines(1).Grow(1).Basis(0)
@@ -246,7 +249,7 @@ func (u *UI) panelNodeList(c *ui.Context, p *pal, r RouteView) {
 	}
 	panelNodeRow(c, p, "all", false, func() {
 		ui.Text(c, i18n.T("全部节点…", "All nodes…")).FontSize(12.5).TextColor(p.ink2).Grow(1)
-		ui.Text(c, fmt.Sprintf(i18n.T("%d 个", "%d"), len(u.snap.Nodes))).FontSize(11.5).FontFeatures("tnum").TextColor(p.mute)
+		ui.Text(c, fmt.Sprintf(i18n.T("%d 个", "%d"), len(pickable))).FontSize(11.5).FontFeatures("tnum").TextColor(p.mute)
 	}).OnClick(func() {
 		u.panelShow(func() {
 			u.page = "home"

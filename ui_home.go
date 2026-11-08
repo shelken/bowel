@@ -1360,6 +1360,9 @@ func (u *UI) heroExpanded(c *ui.Context, p *pal, w float32) {
 
 // autoSeg chooses automatic or manual for a route.
 func (u *UI) autoSeg(c *ui.Context, p *pal, rid string) {
+	if u.snap.External {
+		return
+	}
 	r := u.route(rid)
 	ui.Row(c).Padding(2).Radius(p.r(8)).Background(p.hair2).Children(func() {
 		for _, opt := range []struct {
@@ -1513,7 +1516,7 @@ func (u *UI) nodePicker(c *ui.Context, p *pal, rid string, w float32) {
 	}
 	var list []NodeView
 	q := strings.ToLower(strings.TrimSpace(h.query))
-	for _, n := range u.snap.Nodes {
+	for _, n := range u.pickable(r) {
 		if h.region == "?" && n.Where.Place != nil || h.region != "" && h.region != "?" && (n.Where.Place == nil || n.Where.Place.Country != h.region) {
 			continue
 		}
@@ -1529,7 +1532,7 @@ func (u *UI) nodePicker(c *ui.Context, p *pal, rid string, w float32) {
 	}
 	ui.List(c.Key("nodes"), &h.nodes, len(list), func(i int) {
 		n := list[i]
-		on := r.Node == n.Name
+		on := u.picked(r, n)
 		sw := u.pending("node:"+rid) && on
 		row := ui.ButtonBase(c.Key(n.Name)).Padding(8, 26).Gap(10).Row().AlignItems(ui.Center).BorderWidth(0, 0, 1, 0).BorderColor(p.hair2)
 		ink, sub := p.ink, p.mute
@@ -2304,4 +2307,21 @@ func rulesWord(n int) string {
 		return "rule"
 	}
 	return "rules"
+}
+
+// pickable is what a route can be pointed at: every node for the template's
+// routes, and for an external core's the members of the route's own group.
+func (u *UI) pickable(r RouteView) []NodeView {
+	if u.snap.External {
+		return r.Members
+	}
+	return u.snap.Nodes
+}
+
+// picked is whether n is what the route is pointed at.
+func (u *UI) picked(r RouteView, n NodeView) bool {
+	if u.snap.External {
+		return n.Name == r.Picked
+	}
+	return n.Name == r.Node
 }

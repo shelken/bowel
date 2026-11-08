@@ -119,7 +119,7 @@ func TestExternalCoreRoutesAndNodesAreItsOwn(t *testing.T) {
 		case "/proxies":
 			io.WriteString(w, `{"proxies":{
 				"GLOBAL":{"name":"GLOBAL","type":"Fallback","now":"main","all":["main"]},
-				"main":{"name":"main","type":"Selector","now":"n1","all":["n1","n2"]},
+				"main":{"name":"main","type":"Selector","now":"n1","all":["n1","n2","video"]},
 				"video":{"name":"video","type":"Selector","now":"n2","all":["n1","n2"]},
 				"fastest":{"name":"fastest","type":"URLTest","now":"n1","all":["n1","n2"]},
 				"direct":{"name":"direct","type":"Direct"},
@@ -147,6 +147,30 @@ func TestExternalCoreRoutesAndNodesAreItsOwn(t *testing.T) {
 	}
 	if got, want := strings.Join(routes, " "), "default=n1 video=n2 direct="; got != want {
 		t.Errorf("routes %q, want %q", got, want)
+	}
+	// What a route can be pointed at is its group's own members, groups
+	// among them; the one in use is the group's choice, not the node at
+	// the end of the chain.
+	if !s.External {
+		t.Error("the snapshot does not say the core is external")
+	}
+	for _, c := range []struct{ route, members, picked string }{
+		{"default", "n1 n2 video", "n1"},
+		{"video", "n1 n2", "n2"},
+	} {
+		var ms []string
+		r := RouteView{}
+		for _, v := range s.Routes {
+			if v.ID == c.route {
+				r = v
+			}
+		}
+		for _, m := range r.Members {
+			ms = append(ms, m.Name)
+		}
+		if strings.Join(ms, " ") != c.members || r.Picked != c.picked {
+			t.Errorf("%s: members %q picked %q, want %q %q", c.route, ms, r.Picked, c.members, c.picked)
+		}
 	}
 	var nodes []string
 	for _, n := range s.Nodes {

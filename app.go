@@ -1486,6 +1486,7 @@ func (a *App) snapshot() Snapshot {
 		Routes:        []RouteView{},
 		Nodes:         []NodeView{},
 		Providers:     []ProviderView{},
+		External:      a.core.External(),
 	}
 
 	// Takeover, as it really is.
@@ -1568,6 +1569,13 @@ func (a *App) snapshot() Snapshot {
 			rv.Node, rv.Auto = r.Current(px)
 			if rv.Node == "DIRECT" {
 				rv.Node = ""
+			}
+			if snap.External {
+				g := px[r.Group]
+				rv.Picked = g.Now
+				for _, m := range g.All {
+					rv.Members = append(rv.Members, view(m))
+				}
 			}
 		}
 		if total > 0 {
