@@ -1060,8 +1060,9 @@ func (a *App) probeErr(ctx context.Context, node string) (locate.Result, error) 
 }
 
 // observeCooldown is how long a node that could not be measured is left
-// alone: the loop asks every 2 s.
-const observeCooldown = 5 * time.Minute
+// alone: the loop asks every 2 s. A core that bowel's request does not
+// enter (no TUN, no system proxy) fails every time, so the wait is long.
+const observeCooldown = time.Hour
 
 // observeExit measures where the node that carries the default route exits,
 // unless a recent measurement says. An external core has no probe group to

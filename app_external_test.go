@@ -643,3 +643,43 @@ func TestExternalCoreLocatesTheDefaultRoutesExit(t *testing.T) {
 		t.Errorf("%d traces, want 1: a recent measurement is enough", traces)
 	}
 }
+
+// Without a TUN or system proxy the core never sees bowel's request, and
+// every try fails. A node that could not be measured is not tried again
+// for a long while: each try is a request to the trace page.
+func TestExternalCoreExitMeasureFailureWaitsLong(t *testing.T) {
+	var traces atomic.Int32
+	trace := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		traces.Add(1)
+		io.WriteString(w, "ip=203.0.113.7\ncolo=NRT\nloc=JP\n")
+	}))
+	defer trace.Close()
+	a, _ := externalApp(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/version":
+			io.WriteString(w, `{"version":"sing-box 1.14.4"}`)
+		case "/proxies":
+			io.WriteString(w, `{"proxies":{"GLOBAL":{"name":"GLOBAL","type":"Fallback","now":"main","all":["main"]},
+				"main":{"name":"main","type":"Selector","now":"relay-7","all":["relay-7"]},"relay-7":{"name":"relay-7","type":"Shadowsocks"}}}`)
+		case "/connections":
+			io.WriteString(w, `{"connections":[]}`)
+		default:
+			io.WriteString(w, `{"rules":[],"providers":{}}`)
+		}
+	}))
+	a.refresh()
+	a.mu.Lock()
+	a.traceURL = trace.URL
+	a.mu.Unlock()
+	a.locateExits(false)
+	if traces.Load() != 1 {
+		t.Fatalf("%d traces, want 1", traces.Load())
+	}
+	a.mu.Lock()
+	a.observeAt["relay-7"] = time.Now().Add(-30 * time.Minute)
+	a.mu.Unlock()
+	a.locateExits(false)
+	if traces.Load() != 1 {
+		t.Errorf("%d traces: a node that failed was tried again within the hour", traces.Load())
+	}
+}
