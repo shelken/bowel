@@ -1518,6 +1518,13 @@ func (a *App) emit() {
 	})
 }
 
+// isDirect is whether node, at the end of a route's choices, sends traffic
+// out without a proxy: mihomo's DIRECT, or an external core's own Direct
+// outbound, whatever it is named.
+func isDirect(px map[string]mihomo.Proxy, node string) bool {
+	return node == "DIRECT" || px[node].Type == "Direct"
+}
+
 func (a *App) snapshot() Snapshot {
 	s := a.settings.Get()
 	cs := a.core.Status()
@@ -1631,7 +1638,7 @@ func (a *App) snapshot() Snapshot {
 		rv.Rules += rv.Mine
 		if !r.Direct {
 			rv.Node, rv.Auto = r.Current(px)
-			if rv.Node == "DIRECT" {
+			if isDirect(px, rv.Node) {
 				rv.Node = ""
 			}
 			if snap.External {
@@ -1649,7 +1656,7 @@ func (a *App) snapshot() Snapshot {
 	}
 
 	// Exit and the user's place.
-	if n, _ := a.route(routes.Default).Current(px); n != "" && n != "DIRECT" {
+	if n, _ := a.route(routes.Default).Current(px); n != "" && !isDirect(px, n) {
 		snap.Exit = &Exit{Node: n, Where: view(n).Where}
 	}
 	if you != nil {

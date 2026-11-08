@@ -126,6 +126,7 @@ func TestExternalCoreRoutesAndNodesAreItsOwn(t *testing.T) {
 				"GLOBAL":{"name":"GLOBAL","type":"Fallback","now":"main","all":["main"]},
 				"main":{"name":"main","type":"Selector","now":"n1","all":["n1","n2","video"]},
 				"video":{"name":"video","type":"Selector","now":"n2","all":["n1","n2"]},
+				"lan":{"name":"lan","type":"Selector","now":"direct","all":["direct","n1"]},
 				"fastest":{"name":"fastest","type":"URLTest","now":"n1","all":["n1","n2"]},
 				"direct":{"name":"direct","type":"Direct"},
 				"n2":{"name":"n2","type":"Hysteria2","udp":true},
@@ -134,6 +135,7 @@ func TestExternalCoreRoutesAndNodesAreItsOwn(t *testing.T) {
 			io.WriteString(w, `{"rules":[
 				{"type":"default","payload":"domain=a.example","proxy":"route(video)"},
 				{"type":"default","payload":"domain=b.example","proxy":"route(direct)"},
+				{"type":"default","payload":"domain=c.example","proxy":"route(lan)"},
 				{"type":"default","payload":"port=53","proxy":"hijack-dns"}]}`)
 		case "/providers/proxies":
 			io.WriteString(w, `{"providers":{}}`)
@@ -150,7 +152,7 @@ func TestExternalCoreRoutesAndNodesAreItsOwn(t *testing.T) {
 	for _, r := range s.Routes {
 		routes = append(routes, r.ID+"="+r.Node)
 	}
-	if got, want := strings.Join(routes, " "), "default=n1 video=n2 direct="; got != want {
+	if got, want := strings.Join(routes, " "), "default=n1 video=n2 direct= lan="; got != want {
 		t.Errorf("routes %q, want %q", got, want)
 	}
 	// What a route can be pointed at is its group's own members, groups

@@ -1039,7 +1039,7 @@ func (u *UI) compactView(c *ui.Context, p *pal, id, v string) {
 					for _, r := range proxied {
 						ui.Row(c).Gap(5).Children(func() {
 							swatch(c, p.routeColor(r.ID), 8)
-							name := "—"
+							name := i18n.T("直接连接", "Direct")
 							if n, ok := u.node(r.Node); ok {
 								name = n.Display
 							}
