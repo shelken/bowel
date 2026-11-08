@@ -49,7 +49,7 @@ type App struct {
 	dataDir   string
 	settings  *settings.Store
 	providers *provider.Store
-	routes    routes.Table
+	routes    routes.Table // under mu: an external core's are found by refresh
 	core      *core.Manager
 	mon       *monitor.Monitor
 	loc       *locate.Locator
@@ -68,6 +68,7 @@ type App struct {
 	sys         sysproxy.Status
 	proxies     map[string]mihomo.Proxy
 	provNodes   map[string][]string // provider id → node names, in the provider's order
+	extNodes    []string            // an external core's nodes, which no provider supplies
 	// nodesSig is the names /proxies had when provNodes was read, at
 	// nodesAt: the providers' lists are read again when they change.
 	nodesSig   uint64
@@ -140,6 +141,9 @@ func newApp() (*App, error) {
 		pending: map[string]bool{}, locating: map[string]bool{}, proxies: map[string]mihomo.Proxy{},
 		provNodes: map[string][]string{}, lastNode: map[string]string{}, routeBytes: map[string]int64{},
 		gw: gateway.New(osGateway(), filepath.Join(data, "gateway-before.json")),
+	}
+	if cm.External() {
+		a.routes = nil
 	}
 	cm.SafePaths = []string{filepath.Join(data, "providers")}
 	a.mon.SkipGroup = core.ProbeGroup // the location probe's own traffic
@@ -393,13 +397,22 @@ func (a *App) refresh() {
 	if c, err := a.core.Client(); err == nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		px, err := c.Proxies(ctx)
+		ext := a.core.External()
+		var table routes.Table
+		var leaves []string
+		if ext && err == nil {
+			var rs []mihomo.Rule
+			if rs, err = c.Rules(ctx); err == nil {
+				table, leaves = routes.Discover(px, rs), routes.Nodes(px)
+			}
+		}
 		// The providers' lists hold the same nodes again, in their order:
 		// read them only when the names change, or a minute on.
 		sig := nodeSig(px)
 		a.mu.Lock()
 		nodes, stale := a.provNodes, sig != a.nodesSig || time.Since(a.nodesAt) > time.Minute
 		a.mu.Unlock()
-		if err == nil && stale {
+		if err == nil && stale && !ext {
 			var pp map[string]mihomo.ProxyProvider
 			if pp, err = c.ProxyProviders(ctx); err == nil {
 				nodes = map[string][]string{}
@@ -418,6 +431,9 @@ func (a *App) refresh() {
 		if err == nil {
 			a.mu.Lock()
 			a.proxies, a.provNodes = px, nodes
+			if ext {
+				a.routes, a.extNodes = table, leaves
+			}
 			if stale {
 				a.nodesSig, a.nodesAt = sig, time.Now()
 			}
@@ -470,7 +486,7 @@ func (a *App) applyConfig() error {
 		}
 	}
 	cfg, err := core.BuildConfig(core.Input{
-		Providers: refs, Routes: a.routes, UserRules: s.Rules, Mode: s.Mode, MixedPort: s.MixedPort, AllowLan: s.AllowLan,
+		Providers: refs, Routes: a.routeTable(), UserRules: s.Rules, Mode: s.Mode, MixedPort: s.MixedPort, AllowLan: s.AllowLan,
 		Tun:      s.Tun && a.takeoverOn(s) && tun.Installed(a.tunBin),
 		Gateway:  a.gatewayOn(s),
 		LogLevel: s.LogLevel, TestURL: s.TestURL, ProbePort: a.probePort, Controller: a.core.ControllerFields(),
@@ -887,14 +903,14 @@ func (a *App) revealConfig() error {
 	return exec.Command("open", "-R", a.core.ConfigPath()).Run()
 }
 
-func (a *App) route(id string) routes.Route {
-	for _, r := range a.routes {
-		if r.ID == id {
-			return r
-		}
-	}
-	return routes.Route{}
+// routeTable is the routes now; not with a.mu held.
+func (a *App) routeTable() routes.Table {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.routes
 }
+
+func (a *App) route(id string) routes.Route { return a.routeTable().ByID(id) }
 
 func (a *App) selectNode(routeID, node string) error {
 	r := a.route(routeID)
@@ -984,7 +1000,7 @@ func (a *App) locateExits(force bool) {
 	px := a.proxies
 	a.mu.Unlock()
 	seen := map[string]bool{}
-	for _, r := range a.routes {
+	for _, r := range a.routeTable() {
 		if r.Direct {
 			continue
 		}
@@ -1197,7 +1213,7 @@ func (a *App) reroute(r routes.UserRule, keep string) int {
 		if len(cn.Chains) > 0 {
 			group = cn.Chains[len(cn.Chains)-1]
 		}
-		if keep == "" || a.routes.OfChain(group, cn.Rule) != keep {
+		if keep == "" || a.routeTable().OfChain(group, cn.Rule) != keep {
 			ids = append(ids, cn.ID)
 		}
 	}
@@ -1268,12 +1284,12 @@ func (a *App) convConn(c monitor.Conn) Conn {
 	}
 	v := Conn{
 		ID: c.ID, App: c.App, Process: c.Process, Host: c.Host, IP: c.IP, Port: c.Port, Network: c.Network,
-		Rule: c.Rule, Payload: c.Payload, Route: a.routes.OfChain(group, c.Rule),
+		Rule: c.Rule, Payload: c.Payload, Route: a.routeTable().OfChain(group, c.Rule),
 		Down: c.Down, Up: c.Up, DownRate: c.DownRate, UpRate: c.UpRate, Start: c.Start, End: c.End,
 		Status: c.Status, Error: c.Error,
 	}
 	for i := len(c.Chains) - 1; i >= 0; i-- {
-		v.Chain = append(v.Chain, a.routes.StepTitle(a.display(c.Chains[i])))
+		v.Chain = append(v.Chain, a.routeTable().StepTitle(a.display(c.Chains[i])))
 	}
 	if len(c.Chains) > 1 || (len(c.Chains) == 1 && c.Chains[0] != "DIRECT" && group != c.Chains[0]) {
 		v.Node = a.display(c.Chains[0])
@@ -1340,7 +1356,7 @@ func (a *App) buildTick() Tick {
 		TodayDown: n.TodayDown, TodayUp: n.TodayUp, MonthDown: n.MonthDown, Apps: []AppRate{}, Events: []Event{}}
 	for g, v := range n.ByGroup {
 		// A DIRECT group can be the direct route or the default's DIRECT; count it as direct.
-		id := a.routes.OfChain(g, "x")
+		id := a.routeTable().OfChain(g, "x")
 		if id != "" {
 			t.ByRoute[id] += v
 		}
@@ -1354,7 +1370,7 @@ func (a *App) buildTick() Tick {
 	}
 	for g, v := range n.GroupBytes {
 		if d := v - a.groupSeen[g]; d > 0 {
-			if id := a.routes.OfChain(g, "x"); id != "" {
+			if id := a.routeTable().OfChain(g, "x"); id != "" {
 				a.routeBytes[id] += d
 			}
 		}
@@ -1384,7 +1400,7 @@ func (a *App) buildTick() Tick {
 		if !seen || c.DownRate > b.rate || c.DownRate == b.rate &&
 			(c.Start.Before(b.start) || c.Start.Equal(b.start) && c.ID > b.id) {
 			best[c.App] = top{c.DownRate, c.Start, c.ID}
-			r.Host, r.Route = c.Host, a.routes.OfChain(c.Group, c.Rule)
+			r.Host, r.Route = c.Host, a.routeTable().OfChain(c.Group, c.Rule)
 		}
 	}
 	for _, r := range apps {
@@ -1404,7 +1420,7 @@ func (a *App) buildTick() Tick {
 		if len(e.Chains) > 0 {
 			group = e.Chains[len(e.Chains)-1]
 		}
-		ev := Event{Time: e.Time, Text: e.App + " → " + e.Host, Route: a.routes.OfChain(group, "x"), Failed: e.Failed}
+		ev := Event{Time: e.Time, Text: e.App + " → " + e.Host, Route: a.routeTable().OfChain(group, "x"), Failed: e.Failed}
 		if len(e.Chains) > 1 {
 			ev.Node = a.display(e.Chains[0])
 		}
@@ -1449,6 +1465,7 @@ func (a *App) snapshot() Snapshot {
 	cs := a.core.Status()
 	a.mu.Lock()
 	sys, px, provNodes, you, sw := a.sys, a.proxies, a.provNodes, a.you, a.switched
+	table, extNodes := a.routes, a.extNodes
 	openAtLogin := a.openAtLogin
 	gwp, gwErr := a.gwProbe, a.gwErr
 	pending := make([]string, 0, len(a.pending))
@@ -1462,7 +1479,7 @@ func (a *App) snapshot() Snapshot {
 
 	on := a.takeoverOn(s)
 	snap := Snapshot{
-		Mode: s.Mode, Pending: pending, Version: mygo.App.Version(), RuleCount: routes.Count(a.routes) + len(s.Rules),
+		Mode: s.Mode, Pending: pending, Version: mygo.App.Version(), RuleCount: routes.Count(table) + len(s.Rules),
 		Settings: s, ConfigPath: a.core.ConfigPath(), OpenAtLogin: openAtLogin,
 		ControllerTCP: a.core.TCPAddr(),
 		Core:          Core{State: string(cs.State), Version: cs.Version, Error: cs.Error},
@@ -1519,8 +1536,11 @@ func (a *App) snapshot() Snapshot {
 		}
 		return v
 	}
+	for _, n := range extNodes {
+		snap.Nodes = append(snap.Nodes, view(n))
+	}
 	for _, p := range a.providers.List() {
-		if !p.Enabled {
+		if !p.Enabled || a.core.External() {
 			continue
 		}
 		for _, n := range provNodes[p.ID] {
@@ -1533,7 +1553,7 @@ func (a *App) snapshot() Snapshot {
 	for _, v := range routeBytes {
 		total += v
 	}
-	for _, r := range a.routes {
+	for _, r := range table {
 		rv := RouteView{ID: r.ID, Name: routes.Title(r), Color: r.Color, Summary: routes.Describe(r), Rules: len(r.Rules), Direct: r.Direct}
 		if r.ID == routes.Default {
 			rv.Rules = 1

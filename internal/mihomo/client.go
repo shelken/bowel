@@ -133,6 +133,15 @@ type Rule struct {
 	Proxy   string `json:"proxy"`
 }
 
+// Rules is the core's rules, in the order they apply.
+func (c *Client) Rules(ctx context.Context) ([]Rule, error) {
+	var v struct {
+		Rules []Rule `json:"rules"`
+	}
+	err := c.do(ctx, http.MethodGet, "/rules", nil, &v)
+	return v.Rules, err
+}
+
 // Proxy is one entry of GET /proxies: a node or a group.
 type Proxy struct {
 	Name    string    `json:"name"`

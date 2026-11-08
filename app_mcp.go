@@ -353,13 +353,14 @@ func (a *App) rulesDiff(old, next []routes.UserRule) []string {
 // findRoute is the route s names: its id, its Chinese name or its title.
 func (a *App) findRoute(s string) (routes.Route, error) {
 	s = strings.TrimSpace(s)
-	for _, r := range a.routes {
+	table := a.routeTable()
+	for _, r := range table {
 		if strings.EqualFold(s, r.ID) || s == r.Name || strings.EqualFold(s, routes.Title(r)) {
 			return r, nil
 		}
 	}
-	ids := make([]string, len(a.routes))
-	for i, r := range a.routes {
+	ids := make([]string, len(table))
+	for i, r := range table {
 		ids[i] = r.ID
 	}
 	return routes.Route{}, fmt.Errorf("%s: %q (%s)", i18n.T("没有这条路由", "No such route"), s, strings.Join(ids, ", "))
@@ -523,8 +524,9 @@ func str(desc string, enum ...string) map[string]any {
 }
 
 func (a *App) mcpServer() *mcp.Server {
-	routeIDs := make([]string, len(a.routes))
-	for i, r := range a.routes {
+	table := a.routeTable()
+	routeIDs := make([]string, len(table))
+	for i, r := range table {
 		routeIDs[i] = r.ID
 	}
 	routeArg := str("A route's id: "+strings.Join(routeIDs, ", ")+".", routeIDs...)
@@ -588,7 +590,7 @@ func (a *App) mcpServer() *mcp.Server {
 					} else {
 						return nil, err
 					}
-					id, rule, mine, sure := routes.Explain(host, a.settings.Get().Rules, a.routes)
+					id, rule, mine, sure := routes.Explain(host, a.settings.Get().Rules, a.routeTable())
 					out := map[string]any{"host": host, "site": routes.Site(host), "sure": sure, "userRule": mine}
 					if sure {
 						out["route"], out["rule"] = id, rule
