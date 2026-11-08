@@ -251,7 +251,7 @@ func (a *App) changeSettings(ctx context.Context, s *mcp.Session, what words, ed
 }
 
 // secretKeys are the settings an agent reads only as set or not.
-var secretKeys = []string{"extSecret", "authentication"}
+var secretKeys = []string{"extSecret", "coreSecret", "authentication"}
 
 // settingsMap is s as its JSON keys, with the secrets hidden.
 func settingsMap(s settings.Settings) map[string]any {

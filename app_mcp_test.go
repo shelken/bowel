@@ -170,12 +170,12 @@ func TestMCPPolicy(t *testing.T) {
 	}
 
 	// Secrets are hidden, and the hidden value can't be written back.
-	if _, err := a.settings.Update(func(s *settings.Settings) { s.ExtSecret, s.Authentication = "hunter2", []string{"me:pw"} }); err != nil {
+	if _, err := a.settings.Update(func(s *settings.Settings) { s.ExtSecret, s.Authentication, s.CoreSecret = "hunter2", []string{"me:pw"}, "sbsecret" }); err != nil {
 		t.Fatal(err)
 	}
 	out, _ := callTool(t, srv, s, "get_settings", nil)
 	b, _ := json.Marshal(out)
-	if strings.Contains(string(b), "hunter2") || strings.Contains(string(b), "pw\"") || !strings.Contains(string(b), "me:••••") {
+	if strings.Contains(string(b), "hunter2") || strings.Contains(string(b), "sbsecret") || strings.Contains(string(b), "pw\"") || !strings.Contains(string(b), "me:••••") {
 		t.Errorf("secrets shown: %s", b)
 	}
 	if ed := out["editable"].([]any); slices.Contains(ed, any("mcpPolicy")) || !slices.Contains(ed, any("logLevel")) {
@@ -183,6 +183,9 @@ func TestMCPPolicy(t *testing.T) {
 	}
 	if _, err := callTool(t, srv, s, "update_settings", map[string]any{"changes": map[string]any{"extSecret": "••••"}}); err == nil {
 		t.Error("writing back the hidden secret should fail")
+	}
+	if _, err := callTool(t, srv, s, "update_settings", map[string]any{"changes": map[string]any{"coreSecret": "••••"}}); err == nil {
+		t.Error("writing back the hidden core secret should fail")
 	}
 
 	// The page's list has what happened, newest first.
